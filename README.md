@@ -1,8 +1,14 @@
-# pyecho
+# pyecho-cli
 
-Python interface for ECHO2D electromagnetic wakefield solver.
+Python interface and CLI for ECHO2D electromagnetic wakefield solver.
 
 ## Install
+
+```bash
+pip install pyecho-cli
+```
+
+For development:
 
 ```bash
 pip install -e .

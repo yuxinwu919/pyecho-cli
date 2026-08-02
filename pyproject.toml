@@ -3,7 +3,7 @@ requires = ["setuptools>=82"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pyecho"
+name = "pyecho-cli"
 version = "0.1.0"
 description = "Python interface for ECHO2D electromagnetic wakefield solver"
 authors = [{name = "ECHO2D Team"}]
