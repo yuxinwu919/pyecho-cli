@@ -1,0 +1,40 @@
+# Bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+
+# ECHO2D temp
+.echo2d_temp/
+
+# ECHO2D pre-run examples (regeneratable via CLI)
+ECHO2D_v3_5/Examples/
+
+# ECHO2D Windows redistributables (not source code)
+ECHO2D_v3_5/System/
+
+# Test artifacts
+.pytest_cache/
+*.coverage
+coverage.xml
+
+# Logs
+*.log
+
+# Misc
+*.db

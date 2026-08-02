@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=82"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyecho"
+version = "0.1.0"
+description = "Python interface for ECHO2D electromagnetic wakefield solver"
+authors = [{name = "ECHO2D Team"}]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "h5py>=3.8",
+    "typer>=0.9",
+    "rich>=13.0",
+    "jinja2>=3.1",
+    "pint>=0.22",
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[project.scripts]
+echo2d = "pyecho.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["pyecho*"]

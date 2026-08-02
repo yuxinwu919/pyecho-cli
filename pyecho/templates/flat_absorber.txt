@@ -1,0 +1,10 @@
+% Number of materials
+1
+% Number of elements in metal with conductive walls, permeability, permitivity, conductivity
+5 1 1 0
+% Segments of lines and elipses with conductivity
+0	6	1	6	0	0	0	0	1	0
+1	6	1.01	3.2	0	0	0	0	1	0
+1.01	3.2	1.91	3.2	0	0	0	0	1	0
+1.91	3.2	2.82	6	0	0	0	0	1	0
+2.82	6	4	6	0	0	0	0	1	0
