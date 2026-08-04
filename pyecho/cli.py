@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -32,6 +36,17 @@ from rich.tree import Tree
 
 from pyecho._version import __version__
 
+
+# ---------------------------------------------------------------------------
+# Lazy helpers (used in autocompletion lambdas; import deferred to avoid
+# circular dependency issues at module-load time)
+# ---------------------------------------------------------------------------
+
+def _get_template_names() -> list[str]:
+    """Return registered template names for CLI autocompletion."""
+    from pyecho.config import ECHO2DParams
+    return ECHO2DParams.list_templates()
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
@@ -41,7 +56,6 @@ app = typer.Typer(
     name="echo2d",
     help="ECHO2D — accelerator wakefield / impedance solver toolkit.  "
          "Run 'echo2d <command> --help' for detailed usage.",
-    add_completion=False,
     invoke_without_command=True,
 )
 
@@ -57,7 +71,6 @@ postprocess_app = typer.Typer(help="Post-processing")
 visualize_app = typer.Typer(help="Visualization")
 export_app = typer.Typer(help="Data export")
 compare_app = typer.Typer(help="Compare analysis")
-test_app = typer.Typer(help="Testing and validation")
 system_app = typer.Typer(help="System information")
 
 app.add_typer(project_app, name="project")
@@ -68,7 +81,6 @@ app.add_typer(postprocess_app, name="postprocess")
 app.add_typer(visualize_app, name="visualize")
 app.add_typer(export_app, name="export")
 app.add_typer(compare_app, name="compare")
-app.add_typer(test_app, name="test")
 app.add_typer(system_app, name="system")
 
 
@@ -296,7 +308,7 @@ def example_cmd(
         str,
         typer.Argument(
             help="Example name (leave empty to list)",
-            autocompletion=lambda: list(_EXAMPLES.keys()),
+            autocompletion=lambda: ["list", "ls"] + list(_EXAMPLES.keys()),
         ),
     ] = "",
     output: Annotated[
@@ -353,17 +365,18 @@ def example_cmd(
 
     \b
     Quick start:
-      echo2d example                          # list examples
-      echo2d example round-collimator         # run with defaults
-      echo2d example flat-absorber -o mydemo  # custom output dir
-      echo2d example tesla-cavity --no-run    # only generate files
+      echo2d example list                    # list available examples
+      echo2d example                         # same as above
+      echo2d example round-collimator        # run with defaults
+      echo2d example flat-absorber -o mydemo # custom output dir
+      echo2d example tesla-cavity --no-run   # only generate files
     """
     # Merge deprecated --np alias
     if _np_alias is not None:
         threads = _np_alias
 
-    # ── No name → list examples ──
-    if not name:
+    # ── No name → list examples (also accept "list" / "ls" as aliases) ──
+    if not name or name in ("list", "ls"):
         table = Table(title="Available Examples")
         table.add_column("Name", style="cyan", no_wrap=True)
         table.add_column("Description")
@@ -378,7 +391,7 @@ def example_cmd(
     # ── Look up ──
     ex = _EXAMPLES.get(name)
     if ex is None:
-        console.print(f"[red]Unknown example '{name}'.[/red]")
+        console.print(f"[bold red]Error:[/bold red] Unknown example '{name}'.")
         console.print(f"Available: {', '.join(_EXAMPLES)}")
         raise typer.Exit(1)
 
@@ -541,7 +554,7 @@ def example_cmd(
                 plot_wake_round(result)
             plt.show()
         except Exception as exc:
-            console.print(f"[yellow]⚠ Plot error: {exc}[/yellow]")
+            console.print(f"[yellow]Warning:[/yellow] Plot error: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -555,13 +568,16 @@ def main_callback(
         bool,
         typer.Option("--verbose", "-v", help="Verbose output (DEBUG level logging)"),
     ] = False,
-    config_file: Annotated[
-        Optional[str],
-        typer.Option("--config", "-c", help="Config file path"),
-    ] = None,
     version: Annotated[
         bool,
         typer.Option("--version", help="Show version and exit"),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Machine-readable JSON output (disables Rich formatting)",
+        ),
     ] = False,
 ) -> None:
     """ECHO2D — accelerator wakefield / impedance solver toolkit.
@@ -569,14 +585,54 @@ def main_callback(
     Based on the ECHO2D solver by Igor Zagorodnov (DESY).
     Official site: https://echo4d.de
 
-    Quick start:
-      echo2d project init myproj -t round_collimator --force
-      cd myproj && echo2d run single -d . --threads 4
-      echo2d postprocess wake round/ --plot
+    \b
+    [bold]Quick start (new workflow):[/bold]
+      echo2d project init myproj -t round_collimator
+      echo2d run start --threads 4
+      echo2d postprocess wake . --plot
+
+    \b
+    [bold]Manage projects:[/bold]
+      echo2d workspace                    # show workspace & projects
+      echo2d project list                 # list all projects
+      echo2d project info                 # project details & run history
+
+    \b
+    [bold]Manage runs:[/bold]
+      echo2d run new --name "fine_mesh"   # create a new run
+      echo2d run list                     # list runs in project
+      echo2d run start                    # execute latest run
+
+    \b
+    [bold]Run built-in examples:[/bold]
+      echo2d example list                 # see what's available
+      echo2d example round-collimator     # run N1 with one command
+
+    \b
+    [bold]Explore your system:[/bold]
+      echo2d system check                 # verify installation
+      echo2d system detect                # find ECHO2D executables
+      echo2d system info                  # version & platform info
+
+    \b
+    [bold]Understand your data:[/bold]
+      echo2d visualize wake wakeL_00.txt --bunch Iz0.txt
+      echo2d visualize compare run1/wakeL_00.txt run2/wakeL_00.txt
+      echo2d export csv output_dir/ -o results/
+
+    \b
+    [bold]Need help?[/bold]
+      echo2d <command> --help             # detailed help for any command
     """
     if version:
         console.print(f"[bold]echo2d[/bold] version [cyan]{__version__}[/cyan]")
         console.print(f"Python [cyan]{sys.version}[/cyan]")
+        raise typer.Exit()
+
+    # When invoked without subcommand, show welcome / portal screen.
+    # Future: this will also list echo2d-tui once available.
+    if ctx.invoked_subcommand is None:
+        _show_welcome()
         raise typer.Exit()
 
     # Configure logging: WARNING+ → stderr by default; DEBUG with --verbose.
@@ -597,83 +653,203 @@ def main_callback(
     if verbose:
         console.print("[dim]Verbose mode enabled (DEBUG logging to stderr)[/dim]")
 
-    if config_file:
-        console.print(f"[dim]Using config: {config_file}[/dim]")
-
-    # Store in context for subcommands
+    # Store in context for subcommands.  Subcommands that support
+    # structured output read ctx.obj["json"] to decide between Rich
+    # rendering and plain JSON on stdout.
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
-    ctx.obj["config_file"] = config_file
+    ctx.obj["json"] = json_output
+
+
+# ===================================================================
+# workspace command
+# ===================================================================
+# NOTE(tui): Workspace management (multi-workspace switching, visual
+# project browser, etc.) will be implemented in echo2d-tui.  The CLI
+# workspace command is intentionally minimal — read-only info display.
+# The workspace root is controlled via the ECHO2D_WORKSPACE env var.
+
+@app.command("workspace")
+def workspace_cmd(
+    ctx: typer.Context,
+    scan_dir: Annotated[
+        Optional[str],
+        typer.Option("--scan", "-s", help="Scan a custom directory instead of the default workspace"),
+    ] = None,
+) -> None:
+    """Show workspace information and list projects."""
+    from pyecho.project import _get_workspace_root, scan_workspace
+
+    _json = ctx.obj.get("json", False)
+
+    ws_root = Path(scan_dir).expanduser().resolve() if scan_dir else _get_workspace_root()
+    projects = scan_workspace(ws_root)
+
+    if _json:
+        data = {
+            "workspace": str(ws_root),
+            "project_count": len(projects),
+            "projects": {
+                name: {
+                    "runs": len(p.runs),
+                    "created": p.created,
+                    "template": p.template,
+                    "geometry_type": p.geometry_type,
+                }
+                for name, p in projects.items()
+            },
+        }
+        console.print_json(json.dumps(data, indent=2))
+        return
+
+    # Rich output
+    env_source = "from ECHO2D_WORKSPACE" if os.environ.get("ECHO2D_WORKSPACE") else "default"
+    console.print(
+        Panel.fit(
+            f"[bold]Workspace:[/bold] [cyan]{ws_root}[/cyan]  ([dim]{env_source}[/dim])\n"
+            f"Projects: [bold]{len(projects)}[/bold] found\n\n"
+            "Change: [dim]export ECHO2D_WORKSPACE=/your/path[/dim]",
+            title="ECHO2D Workspace",
+        )
+    )
+
+    if not projects:
+        console.print(
+            "\n[dim]No projects yet. Create one with "
+            "[cyan]echo2d project init <name>[/cyan][/dim]"
+        )
+        return
+
+    table = Table(title="Projects")
+    table.add_column("Name", style="cyan")
+    table.add_column("Type", style="yellow")
+    table.add_column("Runs", justify="right")
+    table.add_column("Created", style="dim")
+
+    for name, p in sorted(projects.items()):
+        gtype = "Recta" if p.geometry_type == "recta" else "Round"
+        table.add_row(name, gtype, str(len(p.runs)), p.created[:10])
+
+    console.print(table)
 
 
 # ===================================================================
 # project commands
 # ===================================================================
+# The project commands manage ECHO2D projects using the new
+# .echo2d.yaml manifest format (Phase 1).  Legacy projects without
+# a manifest are auto-detected and can be migrated.
 
 @project_app.command("init")
 def project_init(
     name: Annotated[str, typer.Argument(help="Project name")],
     template: Annotated[
         str,
-        typer.Option("--template", "-t", help="Project template"),
-    ] = "empty",
-    example: Annotated[
-        Optional[str],
-        typer.Option("--example", "-e", help="Example to copy from"),
-    ] = None,
+        typer.Option(
+            "--template", "-t",
+            help="Project template (use 'empty' for a blank project)",
+            autocompletion=lambda: ["empty"] + _get_template_names(),
+        ),
+    ] = "round_collimator",
+    here: Annotated[
+        bool,
+        typer.Option(
+            "--here",
+            help="Create project in the current directory instead of the workspace",
+        ),
+    ] = False,
     directory: Annotated[
         Optional[str],
-        typer.Option("--dir", "-d", help="Target directory"),
+        typer.Option("--dir", "-d", help="Custom target directory (overrides workspace)"),
     ] = None,
     force: Annotated[
         bool,
         typer.Option("--force", "-f", help="Overwrite existing directory"),
     ] = False,
 ) -> None:
-    """Initialize a new ECHO2D project."""
-    target = Path(directory or name)
-    if target.exists() and not force:
-        console.print(f"[red]Directory '{target}' already exists. Use --force to overwrite.[/red]")
-        raise typer.Exit(1)
+    """Create a new ECHO2D project with standard structure.
 
-    target.mkdir(parents=True, exist_ok=force)
+    By default, projects are created in the workspace
+    (~/echo2d_projects/).  Use --here to create in the current
+    directory, or --dir for a custom location.
+    """
+    from pyecho.project import (
+        init_project as _init_project,
+        _get_workspace_root,
+    )
 
-    # Create basic project structure
-    (target / "geometry").mkdir(exist_ok=True)
-    (target / "results").mkdir(exist_ok=True)
-    (target / "postprocess").mkdir(exist_ok=True)
+    # Resolve geometry type from template
+    gt = "recta" if "flat" in template or "dechirper" in template or template == "dlw" else "round"
 
-    # Write a minimal input_in.txt
-    input_content = _generate_template_input(template)
-    (target / "input_in.txt").write_text(input_content, encoding="utf-8")
-
-    # Auto-generate geometry for DLW template
-    if template == "dlw":
-        _generate_dlw_geometry(target)
-
-    # Write README
-    if template == "dlw":
-        readme = _generate_dlw_readme(name)
+    # Determine target
+    if here:
+        workspace_root = Path.cwd()
+    elif directory:
+        workspace_root = Path(directory).resolve()
     else:
-        readme = f"# {name}\n\nECHO2D simulation project.\n"
-    (target / "README.md").write_text(readme, encoding="utf-8")
+        workspace_root = _get_workspace_root()
 
+    try:
+        manifest = _init_project(
+            name=name,
+            template=template if template != "empty" else "",
+            geometry_type=gt,
+            workspace=workspace_root,
+        )
+    except FileExistsError:
+        if force:
+            # Re-create by removing existing
+            import shutil
+            target = workspace_root / name
+            shutil.rmtree(target, ignore_errors=True)
+            manifest = _init_project(
+                name=name, template=template if template != "empty" else "",
+                geometry_type=gt, workspace=workspace_root,
+            )
+        else:
+            console.print(
+                f"[bold red]Error:[/bold red] Project '{name}' already exists. "
+                "Use --force to overwrite."
+            )
+            raise typer.Exit(1)
+
+    project_dir = workspace_root / name
+
+    # Display result
     console.print(
         Panel.fit(
-            f"[bold green]✓[/bold green] Project '{name}' created at [cyan]{target.resolve()}[/cyan]",
+            f"[bold green]✓[/bold green] Project '[cyan]{name}[/cyan]' created\n"
+            f"  Location:  [dim]{project_dir}[/dim]\n"
+            f"  Template:  {template}\n"
+            f"  Type:      {gt}\n"
+            f"  First run: runs/{manifest.runs[0].dir_name}/",
             title="Project Initialized",
         )
     )
 
-    tree = Tree("Project structure")
-    tree.add("geometry/")
-    tree.add("results/")
-    tree.add("postprocess/")
-    tree.add("input_in.txt")
-    if template == "dlw":
-        tree.add("dlw.txt")
-    tree.add("README.md")
+    # Show project tree
+    run_dir = manifest.runs[0].dir_name
+    tree = Tree(f"[bold]{name}/[/bold]")
+    tree.add("[cyan].echo2d.yaml[/cyan]")
+    runs_node = tree.add("runs/")
+    run_node = runs_node.add(f"[bold]{run_dir}/[/bold]")
+    run_node.add("[cyan].run.yaml[/cyan]")
+    run_node.add("input_in.txt")
+    if gt == "recta":
+        run_node.add("magn/")
+        run_node.add("elec/")
+    else:
+        run_node.add("round/")
+    proc_node = run_node.add("processed/")
+    proc_node.add("wake/")
+    proc_node.add("field/")
+    proc_node.add("particles/")
     console.print(tree)
+
+    console.print(
+        "\n[dim]Next:  cd {0}  &&  edit runs/{1}/input_in.txt  &&  "
+        "echo2d run start[/dim]".format(project_dir, run_dir)
+    )
 
 
 @project_app.command("templates")
@@ -685,6 +861,7 @@ def project_templates() -> None:
 
     table = Table(title="Available Templates")
     table.add_column("Name", style="cyan")
+    table.add_column("Type", style="yellow")
     table.add_column("Description", style="green")
 
     descriptions = {
@@ -695,7 +872,8 @@ def project_templates() -> None:
     }
 
     for t in templates:
-        table.add_row(t, descriptions.get(t, "—"))
+        gtype = "Flat" if "flat" in t or t == "dlw" else "Round"
+        table.add_row(t, gtype, descriptions.get(t, "—"))
 
     console.print(table)
 
@@ -726,92 +904,218 @@ def project_examples() -> None:
 
 @project_app.command("list")
 def project_list(
-    status: Annotated[
+    ctx: typer.Context,
+    all_projects: Annotated[
         bool,
-        typer.Option("--status", "-s", help="Show status of each project"),
+        typer.Option("--all", "-a", help="Scan all directories (not just workspace)"),
     ] = False,
-    sort_by: Annotated[
-        str,
-        typer.Option("--sort", help="Sort by: name, date"),
-    ] = "name",
 ) -> None:
-    """List local projects in the workspace."""
-    cwd = Path.cwd()
-    projects: list[Path] = []
+    """List ECHO2D projects.
 
-    # Find directories with input_in.txt
-    for d in cwd.iterdir():
-        if d.is_dir() and (d / "input_in.txt").exists():
-            projects.append(d)
+    By default, scans the workspace (~/echo2d_projects/).
+    Use --all to scan the current directory for legacy projects as well.
+    """
+    from pyecho.project import scan_workspace, is_legacy_project, _get_workspace_root
 
-    if not projects:
-        console.print("[yellow]No ECHO2D projects found in current directory.[/yellow]")
+    _json = ctx.obj.get("json", False)
+
+    # Collect new-format projects from workspace
+    projects = scan_workspace()
+
+    # Optionally scan current directory for legacy projects
+    legacy: list[Path] = []
+    if all_projects:
+        for d in Path.cwd().iterdir():
+            if d.is_dir() and is_legacy_project(d):
+                legacy.append(d)
+
+    if _json:
+        data = {
+            "new_format": {name: {"runs": len(p.runs)} for name, p in projects.items()},
+            "legacy": [str(d) for d in legacy],
+        }
+        console.print_json(json.dumps(data, indent=2))
         return
 
-    table = Table(title="Local Projects")
-    table.add_column("Project", style="cyan")
-    table.add_column("Path", style="dim")
-    if status:
-        table.add_column("Status", style="yellow")
+    if not projects and not legacy:
+        console.print(
+            "[yellow]No projects found.[/yellow] "
+            "Create one with [cyan]echo2d project init <name>[/cyan]"
+        )
+        return
 
-    for p in sorted(projects, key=lambda x: x.name if sort_by == "name" else x.stat().st_mtime):
-        has_results = (p / "round").is_dir() or (p / "magn").is_dir() or (p / "elec").is_dir()
-        if status:
-            table.add_row(p.name, str(p), "✓ Has results" if has_results else "○ No results")
-        else:
-            table.add_row(p.name, str(p))
+    table = Table(title="Projects")
+    table.add_column("Name", style="cyan")
+    table.add_column("Runs", justify="right")
+    table.add_column("Created", style="dim")
+    table.add_column("Status")
+
+    for name, p in sorted(projects.items()):
+        table.add_row(name, str(len(p.runs)), p.created[:10], "[green]✓[/green]")
+
+    for d in sorted(legacy, key=lambda x: x.name):
+        table.add_row(f"{d.name}", "—", "—", "[yellow]legacy[/yellow]")
 
     console.print(table)
+
+    if legacy:
+        console.print(
+            "\n[dim]Legacy projects can be migrated with "
+            "[cyan]echo2d project migrate <name>[/cyan][/dim]"
+        )
 
 
 @project_app.command("info")
 def project_info(
+    ctx: typer.Context,
     project_dir: Annotated[
         str,
-        typer.Option("--dir", "-d", help="Project directory"),
+        typer.Option("--dir", "-d", help="Project directory (default: current)"),
     ] = ".",
-    json_output: Annotated[
-        bool,
-        typer.Option("--json", help="Output as JSON"),
-    ] = False,
 ) -> None:
-    """Show project information."""
+    """Show detailed project information."""
+    from pyecho.project import (
+        load_project, is_legacy_project, is_echo2d_project, list_runs,
+    )
+
+    _json = ctx.obj.get("json", False)
     pdir = Path(project_dir).resolve()
-    input_file = pdir / "input_in.txt"
 
-    if not input_file.exists():
-        console.print(f"[red]No input_in.txt found in {pdir}[/red]")
+    if is_echo2d_project(pdir):
+        manifest = load_project(pdir)
+        runs = list_runs(pdir)
+    elif is_legacy_project(pdir):
+        manifest = None
+        runs = []
+    else:
+        console.print(
+            f"[bold red]Error:[/bold red] No ECHO2D project found at {pdir}"
+        )
         raise typer.Exit(1)
 
-    from pyecho.config import load_params
-
-    try:
-        params = load_params(input_file)
-    except Exception as exc:
-        console.print(f"[red]Failed to parse input file: {exc}[/red]")
-        raise typer.Exit(1)
-
-    if json_output:
-        console.print_json(params.model_dump_json(indent=2))
+    if _json:
+        if manifest:
+            console.print_json(manifest.model_dump_json(indent=2))
+        else:
+            console.print_json(json.dumps({
+                "name": pdir.name, "type": "legacy", "path": str(pdir),
+            }, indent=2))
         return
 
     # Rich output
-    console.print(Panel.fit(f"[bold]Project: {pdir.name}[/bold]", title="Project Info"))
+    if manifest:
+        console.print(
+            Panel.fit(
+                f"[bold]{manifest.name}[/bold]\n"
+                f"  Created:    {manifest.created[:19]}\n"
+                f"  Template:   {manifest.template or 'custom'}\n"
+                f"  Geometry:   {manifest.geometry_type}\n"
+                f"  Runs:       {len(manifest.runs)} total\n"
+                f"  Version:    pyecho {manifest.pyecho_version}",
+                title="Project Info",
+            )
+        )
+    else:
+        console.print(
+            Panel.fit(
+                f"[bold]{pdir.name}[/bold] [yellow](legacy)[/yellow]\n"
+                f"  Path: [dim]{pdir}[/dim]\n\n"
+                "Migrate with: [cyan]echo2d project migrate .[/cyan]",
+                title="Project Info",
+            )
+        )
+        return
 
-    table = Table(title="Configuration")
-    table.add_column("Parameter", style="cyan")
-    table.add_column("Value", style="green")
+    # List runs
+    if runs:
+        console.print("\n[bold]Runs:[/bold]")
+        run_table = Table()
+        run_table.add_column("ID", style="cyan")
+        run_table.add_column("Name")
+        run_table.add_column("Status")
+        run_table.add_column("Symmetries")
+        for r in runs:
+            syms = ", ".join(sr.symmetry for sr in r.sub_runs)
+            status_icon = {
+                "completed": "[green]✓[/green]",
+                "running": "[yellow]⠇[/yellow]",
+                "failed": "[red]✗[/red]",
+            }.get(r.status, "[dim]○[/dim]")
+            run_table.add_row(r.id, r.name or "—", status_icon, syms)
+        console.print(run_table)
 
-    key_params = [
-        "GeometryFile", "GeometryType", "Units",
-        "BunchSigma", "Modes", "StepY", "StepZ",
-        "MeshLength", "TimeSteps",
-    ]
-    for key in key_params:
-        val = getattr(params, key, "—")
-        table.add_row(key, str(val))
 
-    console.print(table)
+@project_app.command("path")
+def project_path(
+    name: Annotated[str, typer.Argument(help="Project name")],
+) -> None:
+    """Print the absolute path to a project (useful for 'cd')."""
+    from pyecho.project import _get_workspace_root
+
+    ws = _get_workspace_root()
+    proj_dir = ws / name
+    if not proj_dir.is_dir():
+        console.print(f"[bold red]Error:[/bold red] Project '{name}' not found in workspace.")
+        raise typer.Exit(1)
+    # Print raw path so `cd $(echo2d project path myproj)` works
+    console.print(str(proj_dir))
+
+
+@project_app.command("migrate")
+def project_migrate(
+    directory: Annotated[
+        str,
+        typer.Argument(help="Path to legacy project directory"),
+    ] = ".",
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview changes without applying"),
+    ] = False,
+) -> None:
+    """Migrate a legacy project to the new project structure.
+
+    Legacy projects are directories with input_in.txt but no
+    .echo2d.yaml manifest.  Migration creates the manifest and
+    moves existing output into runs/001_legacy/.
+    """
+    from pyecho.project import migrate_project as _migrate, is_legacy_project
+
+    d = Path(directory).resolve()
+    if not is_legacy_project(d):
+        console.print(
+            f"[yellow]Warning:[/yellow] {d} is not a legacy project "
+            "(already migrated or not an ECHO2D project)."
+        )
+        raise typer.Exit(1)
+
+    if dry_run:
+        manifest = _migrate(d, dry_run=True)
+        console.print(
+            Panel.fit(
+                f"[bold]Dry run — would migrate '{d.name}'[/bold]\n\n"
+                f"  Detect: [cyan]{manifest.geometry_type}[/cyan] geometry\n"
+                f"  Create: .echo2d.yaml\n"
+                f"  Move:   output → runs/001_legacy/\n"
+                f"  Status: [dim]no changes made[/dim]",
+                title="Migration Preview",
+            )
+        )
+        return
+
+    try:
+        manifest = _migrate(d)
+        console.print(
+            Panel.fit(
+                f"[bold green]✓[/bold green] Migrated '[cyan]{d.name}[/cyan]'\n\n"
+                f"  Created:  .echo2d.yaml\n"
+                f"  Geometry: {manifest.geometry_type}\n"
+                f"  Output:   → runs/001_legacy/",
+                title="Migration Complete",
+            )
+        )
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/bold red] Migration failed: {exc}")
+        raise typer.Exit(1)
 
 
 # ===================================================================
@@ -825,7 +1129,8 @@ def geometry_create(
         str,
         typer.Option(
             "--structure", "-s",
-            help="Structure type: pipe (step-in/out), dlw, corrugated",
+            help="Structure type: pipe, dlw, corrugated",
+            autocompletion=lambda: ["pipe", "dlw", "corrugated"],
         ),
     ] = "pipe",
     from_segments: Annotated[
@@ -979,7 +1284,7 @@ def geometry_validate(
     try:
         geo = load_geometry(geometry_file)
     except Exception as exc:
-        console.print(f"[red]✗ Validation failed: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Validation failed: {exc}")
         raise typer.Exit(1)
 
     n_seg = len(geo.get("segments", []))
@@ -1017,7 +1322,7 @@ def geometry_show(
     try:
         fig, ax = plot_geometry(geometry_file, units=units)
     except Exception as exc:
-        console.print(f"[red]Failed to plot geometry: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Failed to plot geometry: {exc}")
         raise typer.Exit(1)
 
     if output:
@@ -1031,22 +1336,22 @@ def geometry_show(
 
 @geometry_app.command("info")
 def geometry_info(
+    ctx: typer.Context,
     geometry_file: Annotated[str, typer.Argument(help="Geometry file path")],
-    json_output: Annotated[
-        bool,
-        typer.Option("--json", help="Output as JSON"),
-    ] = False,
 ) -> None:
     """Show geometry information."""
+    # Support global --json flag for machine-readable output
+    _json = ctx.obj.get("json", False)
+
     from pyecho.geometry import load_geometry
 
     try:
         geo = load_geometry(geometry_file)
     except Exception as exc:
-        console.print(f"[red]Failed to load geometry: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Failed to load geometry: {exc}")
         raise typer.Exit(1)
 
-    if json_output:
+    if _json:
         console.print_json(json.dumps(_serialize_geo(geo), indent=2))
         return
 
@@ -1075,7 +1380,10 @@ def geometry_info(
 def config_generate(
     template: Annotated[
         str,
-        typer.Option("--template", "-t", help="Template name"),
+        typer.Option(
+            "--template", "-t", help="Template name",
+            autocompletion=lambda: _get_template_names(),
+        ),
     ] = "round_collimator",
     output: Annotated[
         str,
@@ -1146,7 +1454,7 @@ def config_validate(
     try:
         params = load_params(input_file)
     except Exception as exc:
-        console.print(f"[red]✗ Validation failed: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Validation failed: {exc}")
         raise typer.Exit(1)
 
     console.print(
@@ -1163,25 +1471,25 @@ def config_validate(
 
 @config_app.command("show")
 def config_show(
+    ctx: typer.Context,
     input_file: Annotated[
         str,
         typer.Argument(help="Input file path"),
     ] = "input_in.txt",
-    json_output: Annotated[
-        bool,
-        typer.Option("--json", help="Output as JSON"),
-    ] = False,
 ) -> None:
     """Display configuration."""
+    # Support global --json flag for machine-readable output
+    _json = ctx.obj.get("json", False)
+
     from pyecho.config import load_params
 
     try:
         params = load_params(input_file)
     except Exception as exc:
-        console.print(f"[red]Failed to parse {input_file}: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Failed to parse {input_file}: {exc}")
         raise typer.Exit(1)
 
-    if json_output:
+    if _json:
         console.print_json(params.model_dump_json(indent=2))
         return
 
@@ -1201,6 +1509,348 @@ def config_show(
 # ===================================================================
 # run commands
 # ===================================================================
+# Phase 2: run new / start / list / info integrate with the project
+# management framework.  run single is kept for backward compatibility
+# with legacy (flat-directory) workflows.
+
+@run_app.command("new")
+def run_new(
+    name: Annotated[
+        Optional[str],
+        typer.Option("--name", "-n", help="Human-readable label for this run"),
+    ] = None,
+    from_run: Annotated[
+        Optional[str],
+        typer.Option("--from", "-f", help="Copy configuration from run ID (default: latest)"),
+    ] = None,
+    template: Annotated[
+        Optional[str],
+        typer.Option(
+            "--template", "-t", help="Create fresh from template (overrides --from)",
+            autocompletion=lambda: _get_template_names(),
+        ),
+    ] = None,
+    project: Annotated[
+        Optional[str],
+        typer.Option("--project", "-p", help="Project name (auto-detected if in a project directory)"),
+    ] = None,
+) -> None:
+    """Create a new simulation run in a project.
+
+    Copies input_in.txt and geometry from the latest run (or --from).
+    Use --template to start fresh from a template.
+    """
+    from pyecho.project import (
+        find_project_root, create_new_run, _get_workspace_root,
+    )
+
+    # Find project
+    proj_dir: Path | None = None
+    if project:
+        proj_dir = _get_workspace_root() / project
+        if not proj_dir.is_dir():
+            console.print(f"[bold red]Error:[/bold red] Project '{project}' not found.")
+            raise typer.Exit(1)
+    else:
+        proj_dir = find_project_root()
+        if proj_dir is None:
+            console.print(
+                "[bold red]Error:[/bold red] Not inside an ECHO2D project. "
+                "Use --project to specify one."
+            )
+            raise typer.Exit(1)
+
+    try:
+        run = create_new_run(
+            proj_dir,
+            name=name or "",
+            from_run=from_run,
+            template=template or "",
+        )
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(1)
+
+    run_dir = proj_dir / "runs" / run.dir_name
+    console.print(
+        Panel.fit(
+            f"[bold green]✓[/bold green] Run [cyan]{run.dir_name}[/cyan] created\n"
+            f"  Project:  [dim]{proj_dir.name}[/dim]\n"
+            f"  Type:     {run.geometry_type}\n"
+            f"  Sub-runs: {', '.join(sr.symmetry for sr in run.sub_runs)}\n\n"
+            f"  [dim]cd {run_dir}  &&  echo2d run start[/dim]",
+            title="New Run",
+        )
+    )
+
+
+@run_app.command("start")
+def run_start(
+    run_id: Annotated[
+        Optional[str],
+        typer.Argument(help="Run ID to execute (default: latest in current project)"),
+    ] = None,
+    symmetry: Annotated[
+        Optional[str],
+        typer.Option("--symmetry", "-s", help="Run only this symmetry: magn or elec"),
+    ] = None,
+    threads: Annotated[
+        int,
+        typer.Option("--threads", "-j", help="Number of OpenMP threads"),
+    ] = 1,
+    timeout: Annotated[
+        Optional[int],
+        typer.Option("--timeout", "-t", help="Timeout in seconds"),
+    ] = None,
+    executable: Annotated[
+        Optional[str],
+        typer.Option("--exe", "-e", help="ECHO2D executable path"),
+    ] = None,
+) -> None:
+    """Start an ECHO2D simulation for a run.
+
+    For round geometry, runs once with magn symmetry.
+    For recta geometry, runs magn then elec automatically.
+    Use --symmetry to run only one of them.
+    """
+    from pyecho.project import (
+        find_project_root, load_run_meta, update_run_status, _get_workspace_root,
+    )
+    from pyecho.runner import ECHO2DRunner
+
+    # Find project and run
+    proj_dir = find_project_root()
+    if proj_dir is None:
+        console.print("[bold red]Error:[/bold red] Not inside an ECHO2D project.")
+        raise typer.Exit(1)
+
+    runs_dir = proj_dir / "runs"
+    if run_id:
+        target_dir = None
+        for child in sorted(runs_dir.iterdir()):
+            if child.is_dir() and child.name.startswith(run_id):
+                target_dir = child
+                break
+        if target_dir is None:
+            console.print(f"[bold red]Error:[/bold red] Run '{run_id}' not found.")
+            raise typer.Exit(1)
+    else:
+        dirs = sorted(
+            [d for d in runs_dir.iterdir() if d.is_dir() and (d / ".run.yaml").is_file()],
+            key=lambda x: x.name, reverse=True,
+        )
+        if not dirs:
+            console.print("[bold red]Error:[/bold red] No runs found. Create one with 'echo2d run new'.")
+            raise typer.Exit(1)
+        target_dir = dirs[0]
+
+    meta = load_run_meta(target_dir)
+
+    # Filter sub-runs if --symmetry specified
+    to_run = meta.sub_runs
+    if symmetry:
+        to_run = [sr for sr in to_run if sr.symmetry == symmetry]
+        if not to_run:
+            console.print(f"[bold red]Error:[/bold red] Symmetry '{symmetry}' not in run configuration.")
+            raise typer.Exit(1)
+
+    console.print(
+        Panel.fit(
+            f"[bold]Starting run [cyan]{meta.dir_name}[/cyan][/bold]\n"
+            f"  Project:  [dim]{proj_dir.name}[/dim]\n"
+            f"  Type:     {meta.geometry_type}\n"
+            f"  Steps:    {', '.join(sr.symmetry for sr in to_run)}\n"
+            f"  Threads:  {threads}",
+            title="Simulation",
+        )
+    )
+
+    # Execute each sub-run
+    overall_ok = True
+    for sr in to_run:
+        sym = sr.symmetry
+        out_subdir = target_dir / sr.output_dir.strip("/")
+        out_subdir.mkdir(parents=True, exist_ok=True)
+
+        console.print(f"\n[bold]▶ Running {sym}…[/bold]")
+
+        # Set SymmetryCondition in input_in.txt for this sub-run
+        input_file = target_dir / "input_in.txt"
+        if not input_file.is_file():
+            console.print(f"[bold red]Error:[/bold red] No input_in.txt in {target_dir}")
+            raise typer.Exit(1)
+
+        original = input_file.read_text(encoding="utf-8")
+        if f"SymmetryCondition={sym}" not in original:
+            import re
+            updated = re.sub(
+                r"SymmetryCondition=\w+",
+                f"SymmetryCondition={sym}",
+                original,
+            )
+            input_file.write_text(updated, encoding="utf-8")
+
+        # Run ECHO2D
+        t_start = time.time()
+        try:
+            runner = ECHO2DRunner(target_dir, executable)
+            result = runner.run(params=None, np=threads, timeout=timeout, show_progress=True)
+            elapsed = time.time() - t_start
+
+            # Collect output files produced in work_dir into subdirectory
+            _collect_output(runner.work_dir, out_subdir, sym)
+
+            update_run_status(target_dir, sym, "completed", elapsed)
+            console.print(f"  [green]✓ {sym} completed in {elapsed:.1f}s[/green]")
+        except Exception as exc:
+            update_run_status(target_dir, sym, "failed", time.time() - t_start)
+            console.print(f"  [red]✗ {sym} failed: {exc}[/red]")
+            overall_ok = False
+            break
+        finally:
+            # Restore original input
+            input_file.write_text(original, encoding="utf-8")
+
+    if overall_ok:
+        console.print(f"\n[bold green]✓ Run {meta.dir_name} completed.[/bold green]")
+        console.print(
+            f"[dim]Next: echo2d postprocess wake {target_dir}/[/dim]"
+        )
+    else:
+        console.print(f"\n[bold red]✗ Run {meta.dir_name} failed.[/bold red]")
+        raise typer.Exit(1)
+
+
+@run_app.command("list")
+def run_list(
+    ctx: typer.Context,
+    project: Annotated[
+        Optional[str],
+        typer.Option("--project", "-p", help="Project name (auto-detected if in a project directory)"),
+    ] = None,
+) -> None:
+    """List all runs in a project."""
+    from pyecho.project import find_project_root, list_runs as _list_runs, _get_workspace_root
+
+    _json = ctx.obj.get("json", False)
+
+    proj_dir: Path | None = None
+    if project:
+        proj_dir = _get_workspace_root() / project
+    else:
+        proj_dir = find_project_root()
+
+    if proj_dir is None or not proj_dir.is_dir():
+        console.print("[bold red]Error:[/bold red] No project found.")
+        raise typer.Exit(1)
+
+    runs = _list_runs(proj_dir)
+
+    if _json:
+        console.print_json(json.dumps(
+            [r.model_dump(mode="json") for r in runs], indent=2, default=str
+        ))
+        return
+
+    if not runs:
+        console.print("[yellow]No runs yet.[/yellow] Create one with [cyan]echo2d run new[/cyan]")
+        return
+
+    table = Table(title=f"Runs — {proj_dir.name}")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name")
+    table.add_column("Status")
+    table.add_column("Type")
+    table.add_column("Symmetries")
+    table.add_column("Duration", justify="right")
+
+    for r in runs:
+        syms = ", ".join(sr.symmetry for sr in r.sub_runs)
+        status_icon = {
+            "completed": "[green]✓[/green]",
+            "running": "[yellow]⠇[/yellow]",
+            "failed": "[red]✗[/red]",
+        }.get(r.status, "[dim]○[/dim]")
+        dur = f"{r.total_duration_s:.0f}s" if r.total_duration_s > 0 else "—"
+        table.add_row(r.id, r.name or "—", status_icon, r.geometry_type, syms, dur)
+
+    console.print(table)
+
+
+@run_app.command("info")
+def run_info(
+    ctx: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID (e.g. 001)")],
+    project: Annotated[
+        Optional[str],
+        typer.Option("--project", "-p", help="Project name"),
+    ] = None,
+) -> None:
+    """Show detailed information about a specific run."""
+    from pyecho.project import find_project_root, load_run_meta, _get_workspace_root
+
+    _json = ctx.obj.get("json", False)
+
+    proj_dir: Path | None = None
+    if project:
+        proj_dir = _get_workspace_root() / project
+    else:
+        proj_dir = find_project_root()
+
+    if proj_dir is None:
+        console.print("[bold red]Error:[/bold red] No project found.")
+        raise typer.Exit(1)
+
+    runs_dir = proj_dir / "runs"
+    target_dir = None
+    for child in runs_dir.iterdir():
+        if child.is_dir() and child.name.startswith(run_id):
+            target_dir = child
+            break
+
+    if target_dir is None:
+        console.print(f"[bold red]Error:[/bold red] Run '{run_id}' not found.")
+        raise typer.Exit(1)
+
+    meta = load_run_meta(target_dir)
+
+    if _json:
+        console.print_json(meta.model_dump_json(indent=2))
+        return
+
+    console.print(
+        Panel.fit(
+            f"[bold]{meta.dir_name}[/bold]\n"
+            f"  ID:        {meta.id}\n"
+            f"  Name:      {meta.name or '—'}\n"
+            f"  Created:   {meta.created[:19]}\n"
+            f"  Geometry:  {meta.geometry_type}\n"
+            f"  Status:    {meta.status}",
+            title="Run Info",
+        )
+    )
+
+    if meta.sub_runs:
+        console.print("\n[bold]Sub-runs:[/bold]")
+        sr_table = Table()
+        sr_table.add_column("Symmetry", style="cyan")
+        sr_table.add_column("Status")
+        sr_table.add_column("Duration", justify="right")
+        sr_table.add_column("Output", style="dim")
+        for sr in meta.sub_runs:
+            status_icon = {
+                "completed": "[green]✓[/green]",
+                "failed": "[red]✗[/red]",
+                "running": "[yellow]⠇[/yellow]",
+            }.get(sr.status, "[dim]○[/dim]")
+            dur = f"{sr.duration_s:.1f}s" if sr.duration_s > 0 else "—"
+            sr_table.add_row(sr.symmetry, status_icon, dur, sr.output_dir)
+        console.print(sr_table)
+
+    input_file = target_dir / "input_in.txt"
+    if input_file.is_file():
+        console.print(f"\n[dim]Input: {input_file}[/dim]")
+
 
 @run_app.command("single")
 def run_single(
@@ -1240,13 +1890,32 @@ def run_single(
         typer.Option("--dry-run", help="Show what would be executed"),
     ] = False,
 ) -> None:
-    """Run a single ECHO2D simulation."""
+    """Run a single ECHO2D simulation (legacy mode).
+
+    For new projects, prefer [cyan]echo2d run new[/cyan] and
+    [cyan]echo2d run start[/cyan].
+
+    .. note::
+
+       This command is kept for backward compatibility with pre-Phase-2
+       flat-directory workflows and ad-hoc simulations.  It works with
+       any directory that contains an ``input_in.txt`` file, without
+       requiring a ``.echo2d.yaml`` project manifest.  When used inside
+       a project, consider ``echo2d run start`` instead — it
+       automatically handles symmetries and updates run metadata.
+
+       Do NOT add new features to this command.  New functionality
+       should go into ``run new`` / ``run start`` / ``run list``.
+    """
+    # NOTE(legacy): This function is frozen — do not enhance.
+    # All new run-management features go through the Phase 2 commands
+    # (run new / start / list / info) which integrate with the project
+    # manifest system.  This command exists solely so that users with
+    # existing flat-directory workflows are not broken.
     from pyecho.runner import ECHO2DRunner
     from pyecho.config import load_params
 
     wdir = Path(work_dir).resolve()
-
-    # Load params
     params = None
     if config:
         params = load_params(config)
@@ -1254,7 +1923,7 @@ def run_single(
         params = load_params(wdir / "input_in.txt")
     else:
         console.print(
-            "[red]Error:[/red] No input_in.txt found and no --config specified.\n"
+            "[bold red]Error:[/bold red] No input_in.txt found and no --config specified.\n"
             "Generate one with: [cyan]echo2d config generate[/cyan]"
         )
         raise typer.Exit(1)
@@ -1265,18 +1934,17 @@ def run_single(
             f"Executable:  [cyan]{executable or 'auto-detect'}[/cyan]\n"
             f"Threads:     [cyan]{np}[/cyan]\n"
             f"Config:      [cyan]{config or 'input_in.txt'}[/cyan]",
-            title="Dry Run"
+            title="Dry Run",
         ))
         return
 
-    # Merge deprecated --np alias into --threads
     if _np_alias is not None:
         np = _np_alias
 
     try:
         runner = ECHO2DRunner(wdir, executable)
     except Exception as exc:
-        console.print(f"[red]Failed to initialize runner: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Failed to initialize runner: {exc}")
         raise typer.Exit(1)
 
     console.print(
@@ -1294,15 +1962,14 @@ def run_single(
             result = runner.run(params=params, np=np, timeout=timeout,
                                 show_progress=False)
         else:
-            from rich.progress import Progress, BarColumn, TextColumn, \
-                TimeElapsedColumn
-
             gen = runner.run_stream(params=params, np=np, timeout=timeout)
             result = None
-            with Progress(
-                TextColumn("[bold blue]ECHO2D"),
+            from rich.progress import Progress as RichProgress, BarColumn, \
+                TextColumn as RichTextCol, TimeElapsedColumn
+            with RichProgress(
+                RichTextCol("[bold blue]ECHO2D"),
                 BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>5.0f}%"),
+                RichTextCol("[progress.percentage]{task.percentage:>5.0f}%"),
                 TimeElapsedColumn(),
                 console=console,
             ) as pbar:
@@ -1316,13 +1983,11 @@ def run_single(
                     except StopIteration as exc:
                         result = exc.value
                         break
-                pbar.update(task, completed=100,
-                            description="Simulation complete")
+                pbar.update(task, completed=100, description="Simulation complete")
     except Exception as exc:
-        console.print(f"[red]✗ Simulation failed: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Simulation failed: {exc}")
         raise typer.Exit(1)
 
-    # Display summary
     console.print(
         Panel.fit(
             f"[bold green]✓ Simulation completed[/bold green]\n"
@@ -1400,7 +2065,7 @@ def postprocess_wake(
     try:
         result = quick_postprocess(output_dir, geometry=geometry)
     except Exception as exc:
-        console.print(f"[red]Post-processing failed: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Post-processing failed: {exc}")
         raise typer.Exit(1)
 
     # Display summary
@@ -1512,7 +2177,7 @@ def visualize_wake(
     try:
         parsed = parse_wake_file(wake_file)
     except Exception as exc:
-        console.print(f"[red]Failed to parse wake file: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Failed to parse wake file: {exc}")
         raise typer.Exit(1)
 
     bunch = None
@@ -1572,7 +2237,7 @@ def visualize_compare(
             parsed = parse_wake_file(f)
             results.append((label, parsed["s"], parsed["W_raw"] * 1e-3))
         except Exception as exc:
-            console.print(f"[red]Failed to parse {f}: {exc}[/red]")
+            console.print(f"[bold red]Error:[/bold red] Failed to parse {f}: {exc}")
             raise typer.Exit(1)
 
     fig, ax = plot_comparison(results, difference=difference)
@@ -1590,7 +2255,7 @@ def visualize_compare(
     # Correct use: same mode across different runs/projects.
     if len(modes_seen) > 1:
         console.print(
-            "[yellow]⚠ Note:[/yellow] Comparing different azimuthal modes "
+            "[yellow]Warning:[/yellow] Note: Comparing different azimuthal modes "
             f"({sorted(modes_seen)}).  In round geometry these have "
             "different physical meanings & units.\n"
             "  m=0 → longitudinal wake [V/pC]\n"
@@ -1657,7 +2322,7 @@ def visualize_modes(
             show_bunch=not no_bunch,
         )
     except Exception as exc:
-        console.print(f"[red]Failed to plot modal decomposition: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Failed to plot modal decomposition: {exc}")
         raise typer.Exit(1)
 
     if output:
@@ -1750,6 +2415,61 @@ def export_csv(
 # compare commands
 # ===================================================================
 
+@compare_app.command("projects")
+def compare_projects(
+    project_a: Annotated[str, typer.Argument(help="First project name")],
+    project_b: Annotated[str, typer.Argument(help="Second project name")],
+    run_a: Annotated[
+        Optional[str],
+        typer.Option("--run-a", help="Run ID in first project (default: latest)"),
+    ] = None,
+    run_b: Annotated[
+        Optional[str],
+        typer.Option("--run-b", help="Run ID in second project (default: latest)"),
+    ] = None,
+    mode: Annotated[
+        int,
+        typer.Option("--mode", "-m", help="Azimuthal mode to compare"),
+    ] = 0,
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="Save comparison plot to file"),
+    ] = None,
+) -> None:
+    """Compare wake results between two ECHO2D projects.
+
+    .. note::
+
+        This command is a **placeholder** (Phase 3).  The project
+        management framework (``.echo2d.yaml`` manifests, workspace
+        scanning, run tracking) is in place, but the cross-project
+        comparison logic has not been implemented yet.
+
+        Planned behaviour:
+        - Resolve project names via workspace (no need to type paths)
+        - Auto-select latest completed run in each project
+        - Compare loss factors, wake curves, and modal decompositions
+        - Support both round (single-mode) and recta (assembled) geometries
+        - Generate side-by-side plots and summary tables
+
+        Workaround for now:
+        Use ``echo2d compare runs <dir1> <dir2>`` with explicit paths.
+    """
+    console.print(
+        Panel.fit(
+            "[bold yellow]⏳  Planned feature (Phase 3)[/bold yellow]\n\n"
+            "Cross-project comparison is not yet implemented.\n\n"
+            "The project framework (workspace, manifests, run tracking)\n"
+            "is ready — this is the next step.\n\n"
+            "Workaround:\n"
+            "  [cyan]echo2d compare runs[/cyan] "
+            "[dim]path/to/projA/runs/001/ path/to/projB/runs/001/[/dim]\n\n"
+            "Expected: [cyan]echo2d v0.3.0[/cyan]",
+            title="Compare Projects",
+        )
+    )
+
+
 @compare_app.command("runs")
 def compare_runs_cmd(
     dirs: Annotated[list[str], typer.Argument(help="Output directories to compare")],
@@ -1773,7 +2493,7 @@ def compare_runs_cmd(
     try:
         comp = compare_runs(dirs, labels=labels, mode=mode)
     except Exception as exc:
-        console.print(f"[red]Comparison failed: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Comparison failed: {exc}")
         raise typer.Exit(1)
 
     # Build result list for plotting
@@ -1803,110 +2523,17 @@ def compare_runs_cmd(
 
 
 # ===================================================================
-# test commands
-# ===================================================================
-
-@test_app.command("suite")
-def test_suite(
-    examples: Annotated[
-        Optional[list[int]],
-        typer.Option("--examples", "-e", help="Example indices to test"),
-    ] = None,
-    timeout: Annotated[
-        Optional[int],
-        typer.Option("--timeout", "-t", help="Timeout per test in seconds"),
-    ] = None,
-    parallel: Annotated[
-        int,
-        typer.Option("--parallel", "-p", help="Number of parallel tests"),
-    ] = 1,
-    verbose: Annotated[
-        bool,
-        typer.Option("--verbose", "-v", help="Verbose output"),
-    ] = False,
-) -> None:
-    """Run regression test suite against reference results.
-
-    .. note::
-
-        This command is a **placeholder** — automated regression testing
-        is planned.  For manual validation, run each example and compare
-        with the MATLAB reference outputs in
-        ``ECHO2D_v3_5/Examples/*/PostProcessor2D/``.
-    """
-    console.print(Panel.fit(
-        "[bold yellow]⏳  Planned feature[/bold yellow]\n\n"
-        "Automated regression tests are not yet implemented.\n\n"
-        "Manual workflow:\n"
-        "  1. [cyan]echo2d run single[/cyan] on example\n"
-        "  2. Run the MATLAB PP_*.m script for reference\n"
-        "  3. [cyan]echo2d compare runs[/cyan] to check agreement\n\n"
-        "Expected: [cyan]echo2d v0.3.0[/cyan]",
-        title="Test Suite",
-    ))
-
-
-@test_app.command("example")
-def test_example(
-    name: Annotated[str, typer.Argument(help="Example name")],
-    keep_results: Annotated[
-        bool,
-        typer.Option("--keep", help="Keep results after test"),
-    ] = False,
-    verbose: Annotated[
-        bool,
-        typer.Option("--verbose", "-v", help="Verbose output"),
-    ] = False,
-) -> None:
-    """Test a single example against reference.
-
-    .. note::
-
-        This command is a **placeholder**.  See ``echo2d test suite --help``
-        for manual validation instructions.
-    """
-    console.print(Panel.fit(
-        "[bold yellow]⏳  Planned feature[/bold yellow]\n\n"
-        "Single-example testing is not yet implemented.\n"
-        "Expected: [cyan]echo2d v0.3.0[/cyan]",
-        title="Test Example",
-    ))
-
-
-@test_app.command("list")
-def test_list() -> None:
-    """List available test examples."""
-    from pyecho.config import ECHO2DParams
-
-    templates = ECHO2DParams.list_templates()
-
-    table = Table(title="Available Test Examples")
-    table.add_column("Name", style="cyan")
-    table.add_column("Type", style="yellow")
-
-    for t in templates:
-        try:
-            params = ECHO2DParams.from_template(t)
-            gtype = "Round" if params.GeometryType == "round" else "Flat (recta)"
-        except Exception:
-            gtype = "—"
-        table.add_row(t, gtype)
-
-    console.print(table)
-
-
-# ===================================================================
 # system commands
 # ===================================================================
 
 @system_app.command("info")
 def system_info(
-    json_output: Annotated[
-        bool,
-        typer.Option("--json", help="Output as JSON"),
-    ] = False,
+    ctx: typer.Context,
 ) -> None:
     """Show system and ECHO2D information."""
+    # Support global --json flag for machine-readable output
+    _json = ctx.obj.get("json", False)
+
     import platform
     import sys as _sys
 
@@ -1919,7 +2546,7 @@ def system_info(
         "processor": platform.processor(),
     }
 
-    if json_output:
+    if _json:
         console.print_json(json.dumps(info))
         return
 
@@ -1958,71 +2585,463 @@ def system_detect(
         runner = ECHO2DRunner(Path.cwd() / ".echo2d_temp")
         console.print(f"[green]✓ Found: {runner.executable}[/green]")
     except Exception as exc:
-        console.print(f"[red]✗ Not found: {exc}[/red]")
+        console.print(f"[bold red]Error:[/bold red] Not found: {exc}")
 
-    # List all available executables
+    # List all available executables (platform-aware suffix)
     project_root = Path(__file__).resolve().parent.parent
     codes_dir = project_root / "ECHO2D_v3_5" / "Codes"
     if codes_dir.is_dir():
         console.print("\n[bold]Available executables:[/bold]")
         for child in sorted(codes_dir.iterdir()):
             if child.is_dir():
-                exe = child / "ECHO2D"
-                status = "[green]✓[/green]" if exe.is_file() else "[red]✗[/red]"
-                console.print(f"  {status} {child.name}")
+                exe = _find_exe_in_dir(child)
+                if exe:
+                    console.print(f"  [green]✓[/green] {child.name}  [dim]({exe.name})[/dim]")
+                else:
+                    console.print(f"  [red]✗[/red] {child.name}  [dim](no binary)[/dim]")
 
 
 @system_app.command("check")
 def system_check(
     fix: Annotated[
-        bool,
-        typer.Option("--fix", help="Attempt to fix issues"),
-    ] = False,
+        Optional[str],
+        typer.Option(
+            "--fix",
+            help="Auto-install missing packages: pip, conda, or brew",
+            autocompletion=lambda: ["pip", "conda", "brew"],
+        ),
+    ] = None,
 ) -> None:
-    """Check system dependencies for ECHO2D."""
+    """Check system dependencies and ECHO2D installation.
+
+    Verifies all required Python packages are importable and detects
+    the ECHO2D solver binary.  When packages are missing, suggests
+    install commands tailored to your environment.
+
+    Use ``--fix pip``, ``--fix conda``, or ``--fix brew`` to
+    auto-install with the chosen package manager.
+    """
     import importlib
+    import os as _os
+    import subprocess
+    import sys as _sys
+    from importlib.metadata import PackageNotFoundError, version
 
-    console.print("[bold]Checking dependencies...[/bold]\n")
+    # Validate --fix value early
+    _valid_fix = {"pip", "conda", "brew"}
+    if fix is not None and fix not in _valid_fix:
+        console.print(
+            f"[red]Invalid --fix value '{fix}'.[/red] "
+            f"Choose from: {', '.join(sorted(_valid_fix))}"
+        )
+        raise typer.Exit(2)
 
-    deps = {
-        "numpy": "NumPy",
-        "pydantic": "Pydantic",
-        "matplotlib": "Matplotlib",
-        "typer": "Typer",
-        "rich": "Rich",
-        "h5py": "HDF5 (h5py)",
+    # ------------------------------------------------------------------
+    # 0. Detect environment type
+    # ------------------------------------------------------------------
+    _env_type, _env_name = _detect_python_env()
+
+    # ------------------------------------------------------------------
+    # 1. Python package dependencies (aligned with pyproject.toml)
+    # ------------------------------------------------------------------
+    # Mapping: import_name → (display_name, pip_package_name, metadata_name)
+    # *metadata_name* may differ from *import_name* (e.g. PyYAML imports
+    # as ``yaml`` but its dist-info is ``pyyaml``).
+    # Some packages also have conda / brew equivalents for suggestions.
+    _DEPS: dict[str, tuple[str, str, str, str | None, str | None]] = {
+        #            (display,    pip,       metadata,   conda,         brew)
+        "numpy":      ("NumPy",          "numpy",      "numpy",      "numpy",       None),
+        "scipy":      ("SciPy",          "scipy",      "scipy",      "scipy",       None),
+        "matplotlib": ("Matplotlib",     "matplotlib", "matplotlib", "matplotlib",  None),
+        "pydantic":   ("Pydantic",       "pydantic",   "pydantic",   "pydantic",    None),
+        "yaml":       ("PyYAML",         "pyyaml",     "pyyaml",     "pyyaml",      None),
+        "h5py":       ("HDF5 (h5py)",    "h5py",       "h5py",       "h5py",        None),
+        "typer":      ("Typer",          "typer",      "typer",      "typer",       None),
+        "rich":       ("Rich",           "rich",       "rich",       "rich",        None),
+        "jinja2":     ("Jinja2",         "jinja2",     "jinja2",     "jinja2",      None),
+        "pint":       ("Pint",           "pint",       "pint",       "pint",        None),
+        "tqdm":       ("tqdm",           "tqdm",       "tqdm",       "tqdm",        None),
     }
 
-    all_ok = True
-    for module, name in deps.items():
+    console.print(
+        f"[bold]Checking Python dependencies…[/bold]  "
+        f"[dim](env: {_env_name})[/dim]\n"
+    )
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Package", style="cyan")
+    table.add_column("Status")
+    table.add_column("Version", style="dim")
+
+    missing_imports: list[str] = []   # import names
+    missing_pips: list[str] = []      # pip package names
+
+    for mod, (label, pip_name, meta_name, _c, _b) in _DEPS.items():
         try:
-            importlib.import_module(module)
-            console.print(f"  [green]✓[/green] {name}")
+            importlib.import_module(mod)
+            try:
+                ver = version(meta_name)
+            except PackageNotFoundError:
+                ver = "—"
+            table.add_row(label, "[green]✓ installed[/green]", ver)
         except ImportError:
-            console.print(f"  [red]✗[/red] {name} [dim](not installed)[/dim]")
-            all_ok = False
+            table.add_row(label, "[red]✗ missing[/red]", "—")
+            missing_imports.append(mod)
+            missing_pips.append(pip_name)
 
-    if all_ok:
+    console.print(table)
+
+    # ------------------------------------------------------------------
+    # 2. ECHO2D solver binary
+    # ------------------------------------------------------------------
+    console.print("\n[bold]Checking ECHO2D solver…[/bold]\n")
+    from pyecho.runner import ECHO2DRunner
+
+    binary_ok = True
+    try:
+        runner = ECHO2DRunner(Path.cwd() / ".echo2d_temp")
+        console.print(f"  [green]✓[/green] Binary: {runner.executable}")
+        # Clean up the temp dir that the runner may have created
+        _td = Path(runner.work_dir)
+        if _td.exists() and _td.name == ".echo2d_temp":
+            import shutil
+            shutil.rmtree(_td, ignore_errors=True)
+    except Exception as exc:
+        console.print(f"  [red]✗[/red] Binary: {exc}")
+        binary_ok = False
+
+    # ------------------------------------------------------------------
+    # 3. Report & suggest
+    # ------------------------------------------------------------------
+    if not missing_imports and binary_ok:
         console.print("\n[bold green]All dependencies satisfied.[/bold green]")
-    else:
-        console.print("\n[yellow]Some dependencies are missing. Install with:[/yellow]")
-        console.print("  [dim]pip install numpy pydantic matplotlib typer rich h5py[/dim]")
+        return
 
-        if fix:
-            console.print("[yellow]Auto-fix not yet implemented.[/yellow]")
+    if not missing_imports:
+        console.print(
+            "\n[yellow]ECHO2D binary not found.[/yellow] "
+            "Make sure the [cyan]ECHO2D_v3_5/Codes/[/cyan] directory "
+            "contains a matching executable for your platform."
+        )
+        raise typer.Exit(1)
 
+    # --- build install suggestions ---
+    pkg_list = " ".join(missing_pips)
 
-# ===================================================================
-# Entry point
-# ===================================================================
+    # Determine conda / brew package names
+    _conda_pkgs: list[str] = []
+    _brew_pkgs: list[str] = []
+    for mod in missing_imports:
+        _, pip_name, _, conda_name, brew_name = _DEPS[mod]
+        _conda_pkgs.append(conda_name if conda_name else pip_name)
+        if brew_name:
+            _brew_pkgs.append(brew_name)
 
-if __name__ == "__main__":
-    app()
+    lines: list[str] = []
+    lines.append(f"[bold]pip[/bold]        [dim]pip install {pkg_list}[/dim]")
+
+    conda_tag = "" if _env_type == "conda" else "  [dim](if using conda)[/dim]"
+    lines.append(
+        f"[bold]conda[/bold]      [dim]conda install -c conda-forge "
+        f"{' '.join(_conda_pkgs)}[/dim]{conda_tag}"
+    )
+
+    if _brew_pkgs:
+        lines.append(
+            f"[bold]brew[/bold]       [dim]brew install {' '.join(_brew_pkgs)}[/dim]"
+            f"  [dim](system Python only)[/dim]"
+        )
+
+    # project-level install
+    lines.append(
+        f"[bold]project[/bold]    [dim]pip install -e .[/dim]"
+        f"  [dim](installs all deps from pyproject.toml)[/dim]"
+    )
+
+    suggestion_body = "\n".join(lines)
+
+    if fix is None:
+        # Show multi-option install panel
+        console.print(
+            Panel.fit(
+                f"[bold yellow]{len(missing_imports)} package(s) missing[/bold yellow]\n\n"
+                f"{suggestion_body}\n\n"
+                "Choose the method that matches your environment.\n"
+                "After installing, re-run this check to verify.\n\n"
+                "Auto-install with:\n"
+                "  [cyan]echo2d system check --fix pip[/cyan]\n"
+                "  [cyan]echo2d system check --fix conda[/cyan]\n"
+                "  [cyan]echo2d system check --fix brew[/cyan]",
+                title="Installation Options",
+                border_style="yellow",
+            )
+        )
+        raise typer.Exit(1)
+
+    # ------------------------------------------------------------------
+    # 4. Auto-fix: install via the chosen package manager
+    # ------------------------------------------------------------------
+    _run_auto_fix(
+        method=fix,
+        missing_pips=missing_pips,
+        missing_imports=missing_imports,
+        deps=_DEPS,
+        env_type=_env_type,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _detect_python_env() -> tuple[str, str]:
+    """Detect the Python environment type and a human-readable name.
+
+    Returns
+    -------
+    tuple[str, str]
+        ``(env_type, env_name)`` where *env_type* is one of
+        ``"conda"``, ``"venv"``, ``"system"`` and *env_name* is a
+        display label like ``"conda:base"`` or ``"system Python 3.13"``.
+    """
+    import os as _os
+    import sys as _sys
+
+    # Conda
+    conda_prefix = _os.environ.get("CONDA_PREFIX", "")
+    conda_env = _os.environ.get("CONDA_DEFAULT_ENV", "")
+    if conda_prefix and conda_env:
+        return ("conda", f"conda:{conda_env}")
+
+    # venv / virtualenv
+    if _os.environ.get("VIRTUAL_ENV"):
+        venv_name = _os.path.basename(_os.environ["VIRTUAL_ENV"])
+        return ("venv", f"venv:{venv_name}")
+
+    # Distinguish venv-style from system by comparing prefix
+    if hasattr(_sys, "base_prefix") and _sys.prefix != _sys.base_prefix:
+        return ("venv", f"venv:{_sys.prefix}")
+
+    # System Python
+    py_ver = f"{_sys.version_info.major}.{_sys.version_info.minor}"
+    return ("system", f"system Python {py_ver}")
+
+
+def _show_welcome() -> None:
+    """Display the welcome / portal screen when ``echo2d`` is invoked
+    without a subcommand."""
+    import platform as _platform
+    import sys as _sys
+
+    console.print(
+        Panel.fit(
+            "[bold cyan]⚡ ECHO2D[/bold cyan] — Accelerator Wakefield / Impedance Solver\n\n"
+            "Based on ECHO2D by Igor Zagorodnov (DESY)\n"
+            "Official site: [link=https://echo4d.de]https://echo4d.de[/link]\n\n"
+            "[bold]Tools:[/bold]\n"
+            "  [cyan]echo2d[/cyan]          Command-line toolkit (this tool)\n"
+            "  [cyan]echo2d-tui[/cyan]      Terminal UI  [dim](coming soon)[/dim]\n\n"
+            "[bold]Quick start:[/bold]\n"
+            "  [dim]$[/dim] echo2d project init myproj -t round_collimator\n"
+            "  [dim]$[/dim] echo2d run start --threads 4\n"
+            "  [dim]$[/dim] echo2d postprocess wake . --plot\n\n"
+            "[bold]Workflow:[/bold]\n"
+            "  [dim]$[/dim] echo2d project init   →  create a project\n"
+            "  [dim]$[/dim] echo2d run new          →  add a run\n"
+            "  [dim]$[/dim] echo2d run start        →  execute\n"
+            "  [dim]$[/dim] echo2d run list         →  view history\n\n"
+            "[bold]Explore:[/bold]\n"
+            "  [dim]$[/dim] echo2d [cyan]--help[/cyan]           Full command tree\n"
+            "  [dim]$[/dim] echo2d [cyan]workspace[/cyan]         Show workspace\n"
+            "  [dim]$[/dim] echo2d [cyan]example[/cyan] list      Built-in examples\n"
+            "  [dim]$[/dim] echo2d [cyan]system[/cyan] check      Verify installation\n\n"
+            "[bold]Pro tip:[/bold]\n"
+            "  [dim]$[/dim] echo2d [cyan]--install-completion[/cyan] zsh  "
+            "Enable Tab autocomplete",
+            title=f"ECHO2D v{__version__}",
+            subtitle=f"Python {_sys.version_info.major}.{_sys.version_info.minor}  ·  "
+                      f"{_platform.system()} {_platform.machine()}",
+            border_style="cyan",
+        )
+    )
+
+
+def _run_auto_fix(
+    method: str,
+    missing_pips: list[str],
+    missing_imports: list[str],
+    deps: dict,
+    env_type: str,
+) -> None:
+    """Install missing packages via the chosen package manager.
+
+    Parameters
+    ----------
+    method : str
+        One of ``"pip"``, ``"conda"``, ``"brew"``.
+    missing_pips : list[str]
+        Pip package names to install.
+    missing_imports : list[str]
+        Import names (keys into *deps*).
+    deps : dict
+        Dependency mapping: import_name → (display, pip, meta, conda, brew).
+    env_type : str
+        Detected environment type (for warnings).
+    """
+    import importlib
+    import subprocess
+    import sys as _sys
+
+    # Build the command per method
+    if method == "pip":
+        cmd = [_sys.executable, "-m", "pip", "install", *missing_pips]
+        label = "pip"
+    elif method == "conda":
+        _conda_pkgs: list[str] = []
+        for mod in missing_imports:
+            _, pip_name, _, conda_name, _ = deps[mod]
+            _conda_pkgs.append(conda_name if conda_name else pip_name)
+        cmd = ["conda", "install", "-c", "conda-forge", "-y", *_conda_pkgs]
+        label = "conda"
+    elif method == "brew":
+        _brew_pkgs: list[str] = []
+        for mod in missing_imports:
+            _, _, _, _, brew_name = deps[mod]
+            if brew_name:
+                _brew_pkgs.append(brew_name)
+        if not _brew_pkgs:
+            console.print(
+                "[red]None of the missing packages have Homebrew formulas.[/red]"
+            )
+            raise typer.Exit(1)
+        cmd = ["brew", "install", *_brew_pkgs]
+        label = "brew"
+    else:
+        console.print(f"[bold red]Error:[/bold red] Unknown install method: {method}")
+        raise typer.Exit(2)
+
+    pkg_str = " ".join(missing_pips)
+
+    # Warn if method mismatches environment
+    if method == "conda" and env_type != "conda":
+        console.print(
+            "[yellow]Warning:[/yellow] You are not in a conda environment. "
+            "conda install may fail or install into the wrong environment."
+        )
+    if method == "brew" and env_type != "system":
+        console.print(
+            "[yellow]Warning:[/yellow] brew installs system-level packages. "
+            "These may not be visible to your current Python environment."
+        )
+
+    console.print(
+        Panel.fit(
+            f"Auto-installing [bold]{len(missing_pips)} package(s)[/bold] "
+            f"via [cyan]{label}[/cyan]…\n\n"
+            f"[dim]{' '.join(cmd)}[/dim]",
+            title=f"Auto-Fix ({label})",
+            border_style="cyan",
+        )
+    )
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task(
+                f"{label} install {pkg_str}", total=None
+            )
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            progress.update(task, completed=True)
+
+        if result.returncode != 0:
+            console.print(
+                f"\n[red]Installation failed (exit {result.returncode})[/red]"
+            )
+            stderr_tail = result.stderr.strip().split("\n")[-8:]
+            if stderr_tail:
+                console.print(
+                    Panel("\n".join(stderr_tail),
+                          title=f"{label} stderr",
+                          border_style="red")
+                )
+            raise typer.Exit(1)
+
+        console.print(f"\n[bold green]✓ Packages installed via {label}.[/bold green]")
+
+        # Re-verify
+        still_missing: list[str] = []
+        for mod, pip_name in zip(missing_imports, missing_pips):
+            try:
+                importlib.import_module(mod)
+                console.print(f"  [green]✓[/green] {pip_name} now importable")
+            except ImportError:
+                console.print(f"  [red]✗[/red] {pip_name} still missing")
+                still_missing.append(pip_name)
+
+        if still_missing:
+            console.print(
+                f"\n[red]{len(still_missing)} package(s) could not be "
+                f"installed.[/red]"
+            )
+            raise typer.Exit(1)
+
+        console.print(
+            "\n[bold green]All Python dependencies are now satisfied.[/bold green]"
+        )
+
+    except FileNotFoundError:
+        console.print(
+            f"\n[red]Cannot find [cyan]{label}[/cyan].[/red] "
+            "Is it installed and on your PATH?"
+        )
+        raise typer.Exit(1)
+
+
+def _find_exe_in_dir(directory: Path) -> Path | None:
+    """Find an ECHO2D executable in *directory*, handling platform suffixes.
+
+    On Windows the binary is ``ECHO2D.exe``; on Unix it is ``ECHO2D``.
+    Returns the first match found, or ``None``.
+    """
+    for name in ("ECHO2D.exe", "ECHO2D"):
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _collect_output(work_dir: Path, dest_dir: Path, symmetry: str) -> None:
+    """Collect ECHO2D output files from *work_dir* into *dest_dir*.
+
+    Moves wake files, field data, and logs produced by a single
+    sub-run into the appropriate output subdirectory.
+    """
+    # Wake files
+    for pattern in ("wakeL_*.txt", "Wcc_*.txt", "Wss_*.txt", "Iz0.txt"):
+        for f in work_dir.glob(pattern):
+            dest = dest_dir / f.name
+            if not dest.exists():
+                shutil.move(str(f), str(dest))
+    # Log files
+    for f in work_dir.glob("*.log"):
+        dest = dest_dir / f.name
+        if not dest.exists():
+            shutil.move(str(f), str(dest))
+    # Field monitor data (if any)
+    for child in work_dir.iterdir():
+        if child.is_dir() and child.name.startswith("FieldMonitor"):
+            dest = dest_dir / child.name
+            if not dest.exists():
+                shutil.move(str(child), str(dest))
+
 
 def _generate_template_input(template: str) -> str:
     """Generate a minimal input_in.txt from a template name."""
@@ -2371,3 +3390,11 @@ echo2d export csv magn/ -o csv_magn/
 
 修改 `input_in.txt` 中的参数后直接运行。几何文件 `dlw.txt` 可手动编辑或替换为其他 DLW 几何。
 """
+
+
+# ===================================================================
+# Entry point
+# ===================================================================
+
+if __name__ == "__main__":
+    app()

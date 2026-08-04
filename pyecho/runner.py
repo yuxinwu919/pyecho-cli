@@ -59,8 +59,8 @@ _PLATFORM_EXECUTABLE_MAP: dict[str, str] = {
     "Darwin_x86_64": "ECHO2D_v3_5/Codes/MacOS_ARM_OpenMP/ECHO2D",
     "Linux_arm64": "ECHO2D_v3_5/Codes/Linux_ARM_OpenMP/ECHO2D",
     "Linux_x86_64": "ECHO2D_v3_5/Codes/Linux_MaxwellCluster_MPI/ECHO2D",
-    "Windows_arm64": "ECHO2D_v3_5/Codes/Windows_ARM_OpenMP/ECHO2D",
-    "Windows_x86_64": "ECHO2D_v3_5/Codes/Windows_Intel_OpenMP/ECHO2D",
+    "Windows_arm64": "ECHO2D_v3_5/Codes/Windows_ARM_OpenMP/ECHO2D.exe",
+    "Windows_x86_64": "ECHO2D_v3_5/Codes/Windows_Intel_OpenMP/ECHO2D.exe",
 }
 
 
