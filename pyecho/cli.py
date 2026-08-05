@@ -2127,6 +2127,98 @@ def run_batch(
     ))
 
 
+@run_app.command("converge")
+def run_converge(
+    project: Annotated[
+        Optional[str],
+        typer.Option("--project", "-p", help="Project name or path (auto-detected if in project dir)"),
+    ] = None,
+    mesh_factors: Annotated[
+        str,
+        typer.Option("--mesh-factors", "-m", help="Space-separated mesh step factors (e.g. '2.0 1.0 0.5')"),
+    ] = "2.0 1.0 0.5",
+    modes: Annotated[
+        Optional[str],
+        typer.Option("--modes", help="Modes to compute (default: from base config)"),
+    ] = None,
+    threads: Annotated[
+        int,
+        typer.Option("--threads", "-j", help="OpenMP threads per run"),
+    ] = 1,
+) -> None:
+    """Run an automated mesh-convergence study.
+
+    Given a project with existing geometry + bunch configuration,
+    runs ECHO2D at multiple mesh resolutions and reports the
+    convergence of the loss factor.
+
+    \\b
+    How it works:
+      1. Reads base mesh from the latest run in the project
+      2. Scales StepY/StepZ by each mesh factor
+      3. Runs ECHO2D + postprocessing for each resolution
+      4. Reports loss factor at each mesh, checks <5% convergence
+
+    \\b
+    Examples:
+      echo2d run converge -p myproj
+      echo2d run converge -p myproj -m "2.0 1.0 0.5 0.25" -j 4
+      echo2d run converge -p myproj --modes "0 1"
+    """
+    from pyecho.project import find_project_root, _get_workspace_root
+    from pyecho.converge import run_convergence as _run_conv
+
+    # Resolve project
+    proj_dir: Path | None = None
+    if project:
+        proj_dir = _get_workspace_root() / project
+        if not proj_dir.is_dir():
+            proj_dir = Path(project).resolve()
+    else:
+        proj_dir = find_project_root()
+
+    if proj_dir is None or not (proj_dir / ".echo2d.yaml").is_file():
+        console.print("[red]Error: Not in an ECHO2D project. Use --project to specify one.[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        Panel.fit(
+            f"Project:     [cyan]{proj_dir.name}[/cyan]\n"
+            f"Mesh factors: [cyan]{mesh_factors}[/cyan]\n"
+            f"Threads:     [cyan]{threads}[/cyan]",
+            title="Convergence Study",
+        )
+    )
+
+    try:
+        report = _run_conv(
+            project=str(proj_dir),
+            mesh_factors=mesh_factors,
+            modes=modes,
+            threads=threads,
+        )
+    except Exception as exc:
+        console.print(f"[red]Error: Convergence study failed: {exc}[/red]")
+        raise typer.Exit(1)
+
+    # Rich table summary
+    table = Table(title="Convergence Results")
+    table.add_column("Mesh", style="cyan")
+    table.add_column("h_y [m]", style="yellow")
+    table.add_column("h_z [m]", style="yellow")
+    table.add_column("Loss [V/pC]", style="green")
+    table.add_column("Time", justify="right")
+    for p in report.points:
+        loss_str = f"{p.loss_factor:.6f}" if p.loss_factor is not None else "[red]FAILED[/red]"
+        table.add_row(p.label, f"{p.step_y:.2e}", f"{p.step_z:.2e}", loss_str, f"{p.elapsed_s:.1f}s")
+    console.print(table)
+
+    if report.converged:
+        console.print("\n[green]✓ Converged (<5% between finest two meshes)[/green]")
+    else:
+        console.print("\n[yellow]⚠ Not converged — consider finer meshes[/yellow]")
+
+
 # ===================================================================
 # postprocess commands
 # ===================================================================

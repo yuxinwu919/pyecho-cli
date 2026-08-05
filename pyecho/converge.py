@@ -1,392 +1,252 @@
-"""Convergence analysis tools for ECHO2D mesh refinement studies.
+"""Grid convergence automation for ECHO2D simulations.
 
-Provides :class:`ConvergenceAnalyzer` to systematically scan mesh
-parameters, run convergence tests, and estimate the numerical error
-via Richardson extrapolation.
+Provides :class:`ConvergenceRunner` for automated mesh-refinement studies.
+Given a project with geometry and bunch configuration, runs ECHO2D at
+multiple mesh resolutions and analyses the convergence of the loss factor
+(or kick factor) to determine the optimal mesh settings.
+
+Reference: ECHO Manual §1 (Introduction), which recommends 5 mesh points
+on sigma as the default and doubling resolution to check convergence.
 
 Usage::
 
-    >>> from pyecho.converge import ConvergenceAnalyzer
-    >>> from pyecho.config import ECHO2DParams
-    >>> params = ECHO2DParams.from_template("round_collimator")
-    >>> ca = ConvergenceAnalyzer(params)
-    >>> results = ca.scan_mesh(points_on_sigma=[5, 10, 20])
-    >>> ca.plot_convergence(metric="loss")
-    >>> error_est = ca.estimate_error()
-    >>> print(f"Estimated error: {error_est:.2e}")
+    >>> from pyecho.converge import ConvergenceRunner
+    >>> runner = ConvergenceRunner("my_project", mesh_factors=[0.5, 1.0, 2.0])
+    >>> report = runner.run()
+    >>> print(report.summary())
 """
 
 from __future__ import annotations
 
 import logging
+import shutil
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-import numpy as np
-
-from pyecho.errors import PyEchoError
+from pyecho.config import load_params
+from pyecho.project import (
+    load_project,
+    load_run_meta,
+    list_runs,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class ConvergenceAnalyzer:
-    """Analyze convergence of ECHO2D results with mesh refinement.
+@dataclass
+class ConvergencePoint:
+    """A single point in a convergence study."""
 
-    Runs a series of simulations with increasingly fine mesh resolution
-    and analyses the convergence behaviour of key metrics (loss factor,
-    kick factor) to estimate the numerical discretisation error.
+    label: str
+    step_y: float
+    step_z: float
+    mesh_length: int
+    loss_factor: float | None = None
+    kick_factor: float | None = None
+    elapsed_s: float = 0.0
+    status: str = "pending"  # pending | completed | failed
+
+
+@dataclass
+class ConvergenceReport:
+    """Results of a convergence study."""
+
+    geometry_type: str
+    base_sigma: float
+    points: list[ConvergencePoint] = field(default_factory=list)
+
+    @property
+    def converged(self) -> bool:
+        """Check if finest two meshes agree within 5%."""
+        completed = [p for p in self.points if p.loss_factor is not None]
+        if len(completed) < 2:
+            return False
+        loss_a = completed[-2].loss_factor
+        loss_b = completed[-1].loss_factor
+        if loss_a is None or loss_b is None or abs(loss_b) < 1e-30:
+            return False
+        return abs(loss_a - loss_b) / abs(loss_b) < 0.05
+
+    def summary(self) -> str:
+        """Generate a human-readable convergence summary."""
+        lines = [
+            f"Convergence Study ({self.geometry_type}, sigma={self.base_sigma:.4f} m)",
+            f"{'Mesh':<12} {'h_y [m]':>10} {'h_z [m]':>10} {'Loss [V/pC]':>14} {'Time':>8}",
+            f"{'-'*12} {'-'*10} {'-'*10} {'-'*14} {'-'*8}",
+        ]
+        for p in self.points:
+            loss_str = f"{p.loss_factor:.6f}" if p.loss_factor is not None else "FAILED"
+            lines.append(
+                f"{p.label:<12} {p.step_y:>10.2e} {p.step_z:>10.2e} {loss_str:>14} {p.elapsed_s:>7.1f}s"
+            )
+        lines.append("")
+        lines.append(f"Converged: {'YES' if self.converged else 'NO'} (<5% between finest meshes)")
+        return "\n".join(lines)
+
+
+class ConvergenceRunner:
+    """Run an automated mesh-convergence study.
 
     Parameters
     ----------
-    base_params : ECHO2DParams
-        Baseline simulation parameters.  The mesh steps (``StepY``,
-        ``StepZ``) and ``NStepsInConductive`` are overridden during
-        the scan.
-    work_dir : str or Path, optional
-        Parent directory for scan working directories.  If ``None``,
-        a temporary directory is created.
-    executable : str, optional
-        Path to the ECHO2D binary.  Auto-detected if ``None``.
-    np : int
-        Number of OpenMP threads for each run.
-
-    Attributes
-    ----------
-    base_params : ECHO2DParams
-        The original (unmodified) base parameters.
-    results : list[SimulationResult]
-        Simulation results ordered by increasing mesh resolution.
-    mesh_params : list[dict]
-        Corresponding mesh parameter dicts for each result.
-
-    Examples
-    --------
-    >>> ca = ConvergenceAnalyzer(params, np=4)
-    >>> ca.scan_mesh(points_on_sigma=[5, 10, 20, 40])
-    >>> ca.plot_convergence()
-    >>> err = ca.estimate_error()
+    project_dir : str or Path
+        Path to the ECHO2D project root (must contain .echo2d.yaml).
+    run_ref : str, optional
+        Run ID or path to use as the base configuration.  Defaults to
+        the latest run in the project.
     """
 
     def __init__(
         self,
-        base_params: Any,
-        work_dir: str | Path | None = None,
-        executable: str | None = None,
-        np: int = 1,
+        project_dir: str | Path,
+        run_ref: str | None = None,
     ) -> None:
-        self.base_params = base_params
-        self.np = np
-        self.executable = executable
+        self.project_dir = Path(project_dir).resolve()
+        self._proj = load_project(self.project_dir)
 
-        if work_dir is None:
-            import tempfile
-            self._work_dir = Path(tempfile.mkdtemp(prefix="echo2d_conv_"))
-            self._cleanup = True
-        else:
-            self._work_dir = Path(work_dir).resolve()
-            self._work_dir.mkdir(parents=True, exist_ok=True)
-            self._cleanup = False
-
-        self.results: list[Any] = []
-        self.mesh_params: list[dict[str, Any]] = []
-
-    # ------------------------------------------------------------------
-    # Mesh scan
-    # ------------------------------------------------------------------
-
-    def scan_mesh(
-        self,
-        points_on_sigma: list[int] | None = None,
-        nsteps_conductive: list[int] | None = None,
-    ) -> list[Any]:
-        """Run convergence scan with different mesh resolutions.
-
-        For each value in *points_on_sigma*, the mesh steps are set to
-        ``sigma / n``, where *n* is the number of mesh points per RMS
-        bunch length.
-
-        Parameters
-        ----------
-        points_on_sigma : list[int], optional
-            Number of mesh points per RMS bunch length.  Default is
-            ``[5, 10, 20]``.
-        nsteps_conductive : list[int], optional
-            Values for ``NStepsInConductive`` to scan.  If ``None``,
-            only the mesh steps are varied.
-
-        Returns
-        -------
-        list[SimulationResult]
-            Simulation results, one per mesh configuration, ordered
-            from coarsest to finest.
-
-        Raises
-        ------
-        PyEchoError
-            If no runs complete successfully.
-        """
-        from pyecho.runner import ECHO2DRunner
-
-        if points_on_sigma is None:
-            points_on_sigma = [5, 10, 20]
-
-        sigma = self.base_params.BunchSigma
-
-        # Build mesh configurations
-        configs: list[dict[str, Any]] = []
-        for n in points_on_sigma:
-            step = sigma / n
-            cfg = {"StepY": step, "StepZ": step}
-            if nsteps_conductive:
-                for nc in nsteps_conductive:
-                    c = cfg.copy()
-                    c["NStepsInConductive"] = nc
-                    configs.append(c)
+        # Find base run
+        if run_ref:
+            runs_dir = self.project_dir / "runs"
+            for child in sorted(runs_dir.iterdir()):
+                if child.is_dir() and child.name.startswith(run_ref):
+                    self._base_run_dir = child
+                    break
             else:
-                configs.append(cfg)
-
-        logger.info(
-            "Starting mesh convergence scan: %d configurations, "
-            "sigma=%.3e m, points_on_sigma=%s",
-            len(configs), sigma, points_on_sigma,
-        )
-
-        self.results = []
-        self.mesh_params = []
-
-        for i, cfg in enumerate(configs):
-            run_dir = self._work_dir / f"mesh_{i:03d}"
-            run_dir.mkdir(parents=True, exist_ok=True)
-
-            # Copy base params and override mesh
-            params = self.base_params.model_copy(update=cfg)
-
-            logger.info(
-                "Run %d/%d: StepY=%s, StepZ=%s",
-                i + 1, len(configs),
-                cfg.get("StepY", "default"),
-                cfg.get("StepZ", "default"),
-            )
-
-            runner = ECHO2DRunner(
-                run_dir,
-                executable=self.executable,
-            )
-
-            try:
-                result = runner.run(params=params, np=self.np)
-                self.results.append(result)
-                self.mesh_params.append(cfg)
-            except Exception as exc:
-                logger.warning("Run %d failed: %s", i + 1, exc)
-                continue
-
-        if not self.results:
-            raise PyEchoError(
-                "No convergence runs completed successfully."
-            )
-
-        logger.info(
-            "Convergence scan complete: %d/%d runs succeeded",
-            len(self.results), len(configs),
-        )
-        return self.results
-
-    # ------------------------------------------------------------------
-    # Convergence plot
-    # ------------------------------------------------------------------
-
-    def plot_convergence(
-        self,
-        metric: str = "loss",
-        ax: Any = None,
-    ) -> Any:
-        """Plot convergence curve for a given metric.
-
-        Parameters
-        ----------
-        metric : str
-            Metric to plot: ``"loss"`` (loss factor) or ``"peak"``
-            (peak wake amplitude).
-        ax : matplotlib.axes.Axes, optional
-            Existing axes to plot on.  If ``None``, a new figure and
-            axes are created.
-
-        Returns
-        -------
-        tuple
-            ``(fig, ax)`` tuple from matplotlib.
-
-        Examples
-        --------
-        >>> ca.plot_convergence(metric="loss")
-        >>> import matplotlib.pyplot as plt
-        >>> plt.show()
-        """
-        import matplotlib.pyplot as plt
-
-        if not self.results:
-            raise PyEchoError("No results available. Run scan_mesh() first.")
-
-        # Extract metric values and mesh steps
-        values: list[float] = []
-        steps: list[float] = []
-        for i, result in enumerate(self.results):
-            step = self.mesh_params[i].get("StepY", 0.0)
-            if step <= 0:
-                continue
-            try:
-                v = _extract_metric(result, metric)
-                if v is not None:
-                    values.append(v)
-                    steps.append(step)
-            except Exception as exc:
-                logger.debug("Could not extract metric from run %d: %s", i, exc)
-
-        if not values:
-            raise PyEchoError(f"Could not extract metric {metric!r} from any run.")
-
-        steps_arr = np.array(steps)
-        values_arr = np.array(values)
-
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(8, 5))
+                raise ValueError(f"Run '{run_ref}' not found in {self.project_dir}")
         else:
-            fig = ax.figure
+            runs = list_runs(self.project_dir)
+            if not runs:
+                raise ValueError(f"No runs found in {self.project_dir}")
+            latest = runs[-1]
+            self._base_run_dir = self.project_dir / "runs" / latest.dir_name
 
-        # Plot: metric vs 1/step (proportional to resolution)
-        ax.plot(1.0 / steps_arr, values_arr, "o-", markersize=8, linewidth=1.5)
-        ax.set_xlabel("1 / h  [m⁻¹]  (mesh resolution)")
-        ax.set_ylabel(f"{metric} value")
-        ax.set_title(f"ECHO2D Convergence — {metric}")
-        ax.grid(True, alpha=0.3)
+        self._base_meta = load_run_meta(self._base_run_dir)
+        self._base_params = load_params(self._base_run_dir / "input_in.txt")
+        self._base_sigma = self._base_params.BunchSigma
 
-        # Also plot vs step size on top axis for reference
-        ax2 = ax.twiny()
-        ax2.set_xlim(ax.get_xlim())
-        tick_positions = np.array(ax.get_xticks())
-        tick_labels = [f"{1/t:.1e}" if t > 0 else "" for t in tick_positions]
-        ax2.set_xticklabels(tick_labels)
-        ax2.set_xlabel("h  [m]  (mesh step)")
-
-        fig.tight_layout()
-        return fig, ax
-
-    # ------------------------------------------------------------------
-    # Error estimation
-    # ------------------------------------------------------------------
-
-    def estimate_error(self, metric: str = "loss") -> float:
-        """Estimate numerical error using Richardson extrapolation.
-
-        Assumes the discretisation error scales as :math:`O(h^2)` for
-        the second-order Yee scheme used by ECHO2D.  Fits the form
-        :math:`f(h) = f_0 + C h^2` to the three finest meshes and
-        returns :math:`|C h_{\\text{finest}}^2|` as the error estimate.
+    def run(
+        self,
+        mesh_factors: list[float] | None = None,
+        modes: list[int] | None = None,
+        threads: int = 1,
+        verbose: bool = True,
+    ) -> ConvergenceReport:
+        """Run the convergence study.
 
         Parameters
         ----------
-        metric : str
-            Metric to use: ``"loss"`` or ``"peak"``.
+        mesh_factors : list[float], optional
+            Factors to multiply the base mesh step by.  Default:
+            ``[2.0, 1.0, 0.5]`` (coarse → fine, convergence direction).
+        modes : list[int], optional
+            Modes to compute.  Defaults to the base configuration modes.
+        threads : int
+            Number of OpenMP threads per run.
+        verbose : bool
+            Print progress to stdout.
 
         Returns
         -------
-        float
-            Estimated absolute error of the finest-mesh result.
-
-        Raises
-        ------
-        PyEchoError
-            If fewer than 3 mesh levels are available.
-
-        Notes
-        -----
-        For a second-order method:
-
-        .. math::
-
-            f(h) = f_{\\text{exact}} + A h^2 + O(h^4)
-
-        Using two mesh levels :math:`h` and :math:`h/2`:
-
-        .. math::
-
-            f_{\\text{exact}} \\approx \\frac{4 f(h/2) - f(h)}{3}
+        ConvergenceReport
         """
-        if len(self.results) < 3:
-            raise PyEchoError(
-                "Richardson extrapolation requires at least 3 mesh levels. "
-                f"Got {len(self.results)}."
+        if mesh_factors is None:
+            mesh_factors = [2.0, 1.0, 0.5]
+
+        if modes is None:
+            modes = self._base_params.Modes
+
+        base_hy = self._base_params.StepY
+        base_hz = self._base_params.StepZ
+        base_mesh_len = self._base_params.MeshLength
+
+        geo_type = self._base_meta.geometry_type
+        report = ConvergenceReport(
+            geometry_type=geo_type,
+            base_sigma=self._base_sigma,
+        )
+
+        for factor in mesh_factors:
+            hy = base_hy * factor
+            hz = base_hz * factor
+            mesh_len = max(10, int(base_mesh_len / factor))
+            label = f"hx{factor:.1f}"
+
+            if verbose:
+                print(f"  [{label}] hy={hy:.2e}, hz={hz:.2e}, Nz={mesh_len} ... ",
+                      end="", flush=True)
+
+            point = ConvergencePoint(
+                label=label,
+                step_y=hy,
+                step_z=hz,
+                mesh_length=mesh_len,
             )
 
-        # Extract (step, value) pairs sorted by increasing resolution
-        pairs: list[tuple[float, float]] = []
-        for i, result in enumerate(self.results):
-            step = self.mesh_params[i].get("StepY", 0.0)
-            if step <= 0:
-                continue
+            t0 = time.monotonic()
             try:
-                v = _extract_metric(result, metric)
-                if v is not None:
-                    pairs.append((step, v))
-            except Exception:
-                continue
+                loss = self._run_single(
+                    step_y=hy, step_z=hz, mesh_length=mesh_len,
+                    modes=modes, threads=threads, label=label,
+                )
+                point.loss_factor = loss
+                point.status = "completed"
+            except Exception as exc:
+                point.status = "failed"
+                if verbose:
+                    print(f"FAILED: {exc}")
+                logger.warning("Convergence point %s failed: %s", label, exc)
 
-        if len(pairs) < 3:
-            raise PyEchoError(
-                "Not enough valid metric values for Richardson extrapolation."
-            )
+            point.elapsed_s = time.monotonic() - t0
+            report.points.append(point)
 
-        # Sort by step size (ascending = finest first)
-        pairs.sort(key=lambda x: x[0])
+            if verbose and point.status == "completed":
+                print(f"loss={loss:.6f} V/pC ({point.elapsed_s:.1f}s)")
 
-        # Use the three finest meshes
-        h = np.array([p[0] for p in pairs[:3]])
-        f = np.array([p[1] for p in pairs[:3]])
+        if verbose:
+            print()
+            print(report.summary())
 
-        # Richardson extrapolation: f = f_exact + A*h^2
-        # Build linear system for f_exact and A
-        A_matrix = np.column_stack([np.ones(3), h**2])
-        coeffs, residuals, rank, singular = np.linalg.lstsq(
-            A_matrix, f, rcond=None
-        )
-        f_exact = coeffs[0]
-        A_coeff = coeffs[1]
+        return report
 
-        error_est = abs(A_coeff * h[0]**2)
+    def _run_single(
+        self, step_y: float, step_z: float, mesh_length: int,
+        modes: list[int], threads: int, label: str,
+    ) -> float:
+        """Run a single ECHO2D simulation and return the loss factor."""
+        from pyecho.runner import ECHO2DRunner
+        from pyecho.api import quick_postprocess
+        from pyecho.config import save_params
 
-        logger.info(
-            "Richardson extrapolation: f_exact=%.6e, A=%.6e, "
-            "error_est(h=%.3e)=%.3e",
-            f_exact, A_coeff, h[0], error_est,
-        )
+        # Create a temporary run directory
+        conv_dir = self.project_dir / "runs" / f"_converge_{label}"
+        if conv_dir.exists():
+            shutil.rmtree(conv_dir)
+        conv_dir.mkdir(parents=True, exist_ok=True)
 
-        return float(error_est)
+        # Copy geometry file
+        geom_name = self._base_params.GeometryFile
+        geom_src = self._base_run_dir / geom_name
+        if not geom_src.is_file():
+            geom_src = self.project_dir / geom_name
+        if geom_src.is_file():
+            shutil.copy2(str(geom_src), str(conv_dir / geom_name))
 
+        # Write modified input
+        params = self._base_params.model_copy(update={
+            "StepY": step_y, "StepZ": step_z,
+            "MeshLength": mesh_length, "Modes": modes,
+        })
+        save_params(params, conv_dir / "input_in.txt")
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
+        # Run ECHO2D
+        runner = ECHO2DRunner(conv_dir)
+        result = runner.run(params, np=threads, show_progress=False)
 
-def _extract_metric(result: Any, metric: str) -> float | None:
-    """Extract a metric value from a SimulationResult."""
-    if metric == "loss":
-        # Try to get loss factor from mode 0's processed wake
-        if 0 in result.modes:
-            mode = result.modes[0]
-            if mode.wake_processed is not None:
-                return float(mode.wake_processed.loss_factor)
-        # Fallback: compute from raw wake
-        if 0 in result.modes:
-            mode = result.modes[0]
-            if mode.W_raw is not None and len(mode.W_raw) > 0:
-                from pyecho.mathlib.integration import integr_tr
-                return float(integr_tr(mode.W_raw))
-    elif metric == "peak":
-        if 0 in result.modes:
-            mode = result.modes[0]
-            if mode.wake_processed is not None:
-                return float(mode.wake_processed.peak)
-            if mode.W_raw is not None and len(mode.W_raw) > 0:
-                return float(np.max(np.abs(mode.W_raw)))
-    return None
+        # Postprocess
+        geo_type = self._base_meta.geometry_type
+        try:
+            wake = quick_postprocess(str(conv_dir), geometry=geo_type)
+            return wake.loss_long  # type: ignore[union-attr]
+        finally:
+            shutil.rmtree(conv_dir, ignore_errors=True)
