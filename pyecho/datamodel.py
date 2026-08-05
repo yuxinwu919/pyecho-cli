@@ -101,6 +101,47 @@ class FlatWakeResult:
 
 
 @dataclass
+class RoundWakeResult:
+    """Complete wake result for round (axisymmetric) geometry.
+
+    In a rotationally symmetric structure, the wake is decomposed
+    into independent azimuthal modes.  m=0 (monopole) gives the
+    longitudinal wake potential; m=1 (dipole) gives the dipole
+    modal coefficient and transverse kick.
+
+    Attributes
+    ----------
+    s : np.ndarray
+        Longitudinal coordinate [m].
+    Wlong : np.ndarray
+        Monopole (m=0) longitudinal wake potential [V/pC].
+    Wdipole : np.ndarray or None
+        Dipole (m=1) modal coefficient [V/pC/m²].  ``None`` if
+        dipole mode was not computed.
+    loss_long : float
+        Longitudinal loss factor κ = −∫ λ·Wlong·ds  [V/pC].
+    kick_dipole : float or None
+        Dipole transverse kick factor [V/pC/m].  ``None`` if
+        dipole mode was not computed.
+    bunch : np.ndarray
+        Bunch charge-density profile on the same *s* grid.
+    peak : float
+        Peak absolute value of Wlong [V/pC].
+    rms_spread : float
+        RMS spread of Wlong around −κ [V/pC].
+    """
+
+    s: np.ndarray
+    Wlong: np.ndarray
+    Wdipole: np.ndarray | None
+    loss_long: float
+    kick_dipole: float | None
+    bunch: np.ndarray
+    peak: float = 0.0
+    rms_spread: float = 0.0
+
+
+@dataclass
 class ModeResult:
     """Raw and processed results for a single Fourier azimuthal mode.
 

@@ -303,53 +303,53 @@ class ECHO2DParams(BaseModel):
         # ---- geometry ----
         lines.append("%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%")
         lines.append("")
-        lines.append(f"GeometryFile={self.GeometryFile}\t% -(Gaussian beam)")
-        lines.append(f"Units={self.Units}\t% -m/cm/mm")
+        lines.append(f"GeometryFile={self.GeometryFile}\t% geometry file, '-' for Gaussian beam")
+        lines.append(f"Units={self.Units}\t% m / cm / mm")
         lines.append(f"GeometryType={self.GeometryType}\t % recta / round")
-        lines.append(f"Width={self.Width}\t% in meters")
-        lines.append(f"SymmetryCondition={self.SymmetryCondition}\t % magn/elec")
-        lines.append(f"Convex={self._bool_to_int(self.Convex)}")
+        lines.append(f"Width={self.Width}\t% pipe half-width [m], 0 for round")
+        lines.append(f"SymmetryCondition={self.SymmetryCondition}\t % magn / elec")
+        lines.append(f"Convex={self._bool_to_int(self.Convex)}\t% 1=convex, 0=non-convex")
 
         # ---- beam ----
         lines.append("")
         lines.append("%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%")
         lines.append("")
-        lines.append(f"InPartFile={self.InPartFile}")
-        lines.append(f"BunchSigma={self.BunchSigma}")
-        lines.append(f"Offset={self.Offset}")
-        lines.append(f"InjectionTimeStep={self.InjectionTimeStep}")
+        lines.append(f"InPartFile={self.InPartFile}\t% input particle file, '-' for none")
+        lines.append(f"BunchSigma={self.BunchSigma}\t% RMS bunch length [m]")
+        lines.append(f"Offset={self.Offset}\t% beam offset in mesh lines, -1=on-axis")
+        lines.append(f"InjectionTimeStep={self.InjectionTimeStep}\t% time step to inject beam")
 
         # ---- field ----
         lines.append("")
         lines.append("%%%%%%%%%%%%%%  field %%%%%%%%%%%%%%%%%%%%%%")
         lines.append("")
-        lines.append(f"InFieldDir={self.InFieldDir}")
-        lines.append(f"PortDir={self.PortDir}")
-        lines.append(f"PortPosition={self.PortPosition}")
+        lines.append(f"InFieldDir={self.InFieldDir}\t% input field directory, '-' for none")
+        lines.append(f"PortDir={self.PortDir}\t% port directory, '-' for none")
+        lines.append(f"PortPosition={self.PortPosition}\t% port position, -1=auto")
 
         # ---- model ----
         lines.append("")
         lines.append("%%%%%%%%%%%%%% model %%%%%%%%%%%%%%%%%%%%%%%")
         lines.append("")
-        lines.append(f"WakeIntMethod={self.WakeIntMethod}")
-        lines.append(f"Modes={' '.join(str(m) for m in self.Modes)} ")
-        lines.append(f"ParticleMotion={self._bool_to_int(self.ParticleMotion)}")
-        lines.append(f"ParticleField={self._bool_to_int(self.ParticleField)}")
-        lines.append(f"CurrentFilter={self.CurrentFilter}")
-        lines.append(f"ParticleLoss={self._bool_to_int(self.ParticleLoss)}")
+        lines.append(f"WakeIntMethod={self.WakeIntMethod}\t% ind=indirect, dir=direct")
+        lines.append(f"Modes={' '.join(str(m) for m in self.Modes)} \t% azimuthal mode numbers")
+        lines.append(f"ParticleMotion={self._bool_to_int(self.ParticleMotion)}\t% 1=track particles")
+        lines.append(f"ParticleField={self._bool_to_int(self.ParticleField)}\t% 1=compute particle field")
+        lines.append(f"CurrentFilter={self.CurrentFilter}\t% current filter flag")
+        lines.append(f"ParticleLoss={self._bool_to_int(self.ParticleLoss)}\t% 1=compute particle loss")
 
         # ---- mesh ----
         lines.append("")
         lines.append("%%%%%%%%%%%%%% mesh %%%%%%%%%%%%%%%%%%%%%%%")
         lines.append("")
-        lines.append(f"MeshLength={self.MeshLength}")
-        lines.append(f"StartPosition={self.StartPosition}")
-        lines.append(f"TimeSteps={self.TimeSteps}")
-        lines.append(f"StepY={self.StepY}")
-        lines.append(f"StepZ={self.StepZ}")
-        lines.append(f"NStepsInConductive={self.NStepsInConductive}")
-        lines.append(f"AdjustMesh={self._bool_to_int(self.AdjustMesh)}")
-        lines.append(f"MeshMotionFile={self.MeshMotionFile}")
+        lines.append(f"MeshLength={self.MeshLength}\t% moving mesh length [grid lines]")
+        lines.append(f"StartPosition={self.StartPosition}\t% mesh start position [grid lines]")
+        lines.append(f"TimeSteps={self.TimeSteps}\t% number of time steps, -1=auto")
+        lines.append(f"StepY={self.StepY}\t% transverse mesh step [m]")
+        lines.append(f"StepZ={self.StepZ}\t% longitudinal mesh step [m]")
+        lines.append(f"NStepsInConductive={self.NStepsInConductive}\t% steps inside conductive wall")
+        lines.append(f"AdjustMesh={self._bool_to_int(self.AdjustMesh)}\t% 1=auto-adjust mesh")
+        lines.append(f"MeshMotionFile={self.MeshMotionFile}\t% mesh motion file, '-' for v=c")
 
         # ---- monitors ----
         lines.append("")
@@ -358,11 +358,11 @@ class ECHO2DParams(BaseModel):
 
         if self.WakeMonitor is not None:
             wm = " ".join(str(x) for x in self.WakeMonitor)
-            lines.append(f"WakeMonitor={wm} ")
+            lines.append(f"WakeMonitor={wm} \t% M1 M2 M3 (start, end, step)")
 
         if self.BeamMonitor is not None:
             bm = " ".join(str(x) for x in self.BeamMonitor)
-            lines.append(f"BeamMonitor={bm} ")
+            lines.append(f"BeamMonitor={bm} \t% M1 M2 M3 M4")
 
         for fm in self.FieldMonitor:
             # Standard format per ECHO2D manual section 4.3.6:
@@ -376,10 +376,10 @@ class ECHO2DParams(BaseModel):
                 f"{fm.N}"
             )
 
-        lines.append(f"DumpField={self._bool_to_int(self.DumpField)}")
-        lines.append(f"DumpParticles={self._bool_to_int(self.DumpParticles)}")
-        lines.append(f"DumpCurrent={self._bool_to_int(self.DumpCurrent)}")
-        lines.append(f"DumpMesh={self._bool_to_int(self.DumpMesh)}")
+        lines.append(f"DumpField={self._bool_to_int(self.DumpField)}\t% 1=dump EM field to disk")
+        lines.append(f"DumpParticles={self._bool_to_int(self.DumpParticles)}\t% 1=dump particle data")
+        lines.append(f"DumpCurrent={self._bool_to_int(self.DumpCurrent)}\t% 1=dump current profile")
+        lines.append(f"DumpMesh={self._bool_to_int(self.DumpMesh)}\t% 1=dump mesh geometry")
 
         return "\n".join(lines) + "\n"
 

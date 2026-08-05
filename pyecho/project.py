@@ -80,12 +80,33 @@ SCHEMA_VERSION: int = 1
 def _get_workspace_root() -> Path:
     """Return the workspace root directory.
 
-    Reads ``ECHO2D_WORKSPACE`` environment variable; falls back to
-    ``~/echo2d_projects``.
+    Priority:
+    1. ``ECHO2D_WORKSPACE`` environment variable
+    2. Current working directory (if it contains ``.echo2d.yaml`` or is
+       inside an ECHO2D project)
+    3. ``~/echo2d_projects`` default
     """
     env = os.environ.get("ECHO2D_WORKSPACE", "")
     if env:
         return Path(env).expanduser().resolve()
+
+    # Check if CWD is inside a project — use that project's parent as workspace
+    cwd = Path.cwd().resolve()
+    current = cwd
+    for _ in range(10):
+        if (current / MANIFEST_FILE).is_file():
+            # CWD is inside a project; use its parent as workspace
+            return current.parent
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    # Check if CWD itself has project subdirectories
+    for child in cwd.iterdir():
+        if child.is_dir() and (child / MANIFEST_FILE).is_file():
+            return cwd
+
     return Path(DEFAULT_WORKSPACE).expanduser().resolve()
 
 
@@ -572,6 +593,56 @@ def update_run_status(
             pass  # best-effort sync, don't break on project update failure
 
 
+def update_processed(
+    run_dir: str | Path,
+    loss_long: float | None = None,
+    kick_quad: float | None = None,
+    kick_dipole: float | None = None,
+    peak: float | None = None,
+) -> None:
+    """Update processed wake results in ``.run.yaml``.
+
+    Parameters
+    ----------
+    run_dir : str or Path
+        Path to the run directory.
+    loss_long : float, optional
+        Longitudinal loss factor [V/pC].
+    kick_quad : float, optional
+        Quadrupole kick factor [V/pC/mm].
+    kick_dipole : float, optional
+        Dipole kick factor [V/pC/mm].
+    peak : float, optional
+        Peak wake potential [V/pC] (round geometry).
+    """
+    run_dir = Path(run_dir).resolve()
+    meta = load_run_meta(run_dir)
+
+    if loss_long is not None:
+        meta.processed.loss_long_VpC = loss_long
+    if kick_quad is not None:
+        meta.processed.kick_quad_VpCmm = kick_quad
+    if kick_dipole is not None:
+        meta.processed.kick_dipole_VpCmm = kick_dipole
+    if peak is not None:
+        meta.processed.peak_VpC = peak
+
+    save_run_meta(meta, run_dir)
+
+    # Also sync to project manifest
+    project_dir = find_project_root(run_dir)
+    if project_dir is not None:
+        try:
+            proj = load_project(project_dir)
+            for r in proj.runs:
+                if r.id == meta.id and r.name == meta.name:
+                    r.processed = meta.processed
+                    break
+            save_project(proj, project_dir)
+        except Exception:
+            pass
+
+
 def _copy_input_files(source_dir: Path, dest_dir: Path) -> None:
     """Copy input files (*.txt) from *source_dir* to *dest_dir*."""
     for f in source_dir.glob("*.txt"):
@@ -784,6 +855,43 @@ def list_runs(project_dir: str | Path) -> list[RunManifest]:
     return runs
 
 
+def resolve_run_dir(
+    run_ref: str,
+    project_dir: str | Path | None = None,
+) -> Path | None:
+    """Resolve a run reference to its actual directory path.
+
+    Supports:
+    - Run ID (e.g. ``"001"``) — matched by prefix in ``runs/``
+    - Relative path (e.g. ``"runs/001_baseline"``)
+    - Absolute path
+
+    If *project_dir* is ``None``, auto-detects from the current
+    working directory via :func:`find_project_root`.
+
+    Returns ``None`` if no matching run is found.
+    """
+    if project_dir is None:
+        project_dir = find_project_root()
+
+    ref_path = Path(run_ref)
+
+    # If it's already a valid directory path, use it directly
+    if ref_path.is_dir():
+        return ref_path.resolve()
+
+    # If it looks like a run ID (e.g. "001", "002"), resolve via project
+    if project_dir is not None:
+        proj = Path(project_dir)
+        runs_dir = proj / RUNS_DIR
+        if runs_dir.is_dir():
+            for child in sorted(runs_dir.iterdir()):
+                if child.is_dir() and child.name.startswith(run_ref):
+                    return child.resolve()
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -791,7 +899,10 @@ def list_runs(project_dir: str | Path) -> list[RunManifest]:
 def _write_stub_input(run_dir: Path, template: str, geometry_type: str) -> None:
     """Write a stub ``input_in.txt`` for a new run.
 
-    The user is expected to edit this file before running.
+    Also copies the geometry template file into the run directory
+    if the template has an associated geometry.
+
+    The user is expected to edit these files before running.
     """
     from pyecho.config import ECHO2DParams
 
@@ -804,5 +915,17 @@ def _write_stub_input(run_dir: Path, template: str, geometry_type: str) -> None:
             params = ECHO2DParams(GeometryType="recta", Width=0.07, GeometryFile=geo_file)
         else:
             params = ECHO2DParams(GeometryType="round", GeometryFile=geo_file)
+
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "input_in.txt").write_text(params.to_input_file(), encoding="utf-8")
+
+    # Copy geometry template file if available
+    geom_name = params.GeometryFile
+    if geom_name and geom_name != "-":
+        # Look in pyecho/templates/
+        from pathlib import Path as _Path
+        _tpl_dir = _Path(__file__).parent / "templates"
+        _tpl_geom = _tpl_dir / geom_name
+        if _tpl_geom.is_file():
+            import shutil as _shutil
+            _shutil.copy2(str(_tpl_geom), str(run_dir / geom_name))

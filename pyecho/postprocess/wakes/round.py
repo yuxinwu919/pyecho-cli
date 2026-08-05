@@ -239,7 +239,7 @@ def process_wake_dipole(
         loss_factor=loss,
         rms_spread=spread,
         peak=float(np.max(np.abs(W_long))),
-        label="dipole-longitudinal",
+        label="dipole",
         units="V/pC/m²",
     )
     result_trans = WakeResult(
@@ -249,7 +249,7 @@ def process_wake_dipole(
         loss_factor=kick,
         rms_spread=rms_kick,
         peak=float(np.max(np.abs(W_trans))),
-        label="dipole-transverse",
+        label="dipole-kick",
         units="V/pC/m",
     )
 

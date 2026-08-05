@@ -140,7 +140,7 @@ def quick_postprocess(
     output_dir: str,
     geometry: str | None = None,
     **kwargs,
-) -> "WakeResult | FlatWakeResult":
+) -> "RoundWakeResult | FlatWakeResult":
     """One-line postprocessing of ECHO2D output.
 
     Auto-detects the geometry type and applies the appropriate
@@ -157,7 +157,7 @@ def quick_postprocess(
 
     Returns
     -------
-    WakeResult or FlatWakeResult
+    RoundWakeResult or FlatWakeResult
         Processed wake result.
     """
     from pyecho.parser import OutputLoader
@@ -250,14 +250,14 @@ def compare_runs(
 def _postprocess_round(
     loader,
     **kwargs,
-) -> "WakeResult":
+) -> "RoundWakeResult":
     """Post-process round-geometry results.
 
-    Dispatches to the proper post-processing pipeline based on the
-    available azimuthal modes.  For m=0 uses :func:`process_wake_monopole`;
-    for m=1 uses :func:`process_wake_dipole` and returns the longitudinal
-    component.
+    Returns a :class:`RoundWakeResult` containing monopole (m=0)
+    longitudinal wake and optionally dipole (m=1) modal coefficient
+    and kick factor.
     """
+    from pyecho.datamodel import RoundWakeResult
     from pyecho.postprocess import PostProcessor
 
     pp = PostProcessor(loader)
@@ -267,13 +267,31 @@ def _postprocess_round(
 
     available_modes = sorted(all_wakes.keys())
 
-    # If dipole (m=1) is available, use the full dipole pipeline
-    if 1 in available_modes:
-        dipole_result = pp.process_wake_dipole()
-        return dipole_result["longitudinal"]
+    # Monopole (m=0) — longitudinal wake potential
+    mono = pp.process_wake_monopole()
 
-    # Otherwise use monopole pipeline
-    return pp.process_wake_monopole()
+    Wdipole = None
+    kick_dipole = None
+
+    # Dipole (m=1) — modal coefficient + kick
+    if 1 in available_modes:
+        try:
+            dipole = pp.process_wake_dipole()
+            Wdipole = dipole["longitudinal"].W
+            kick_dipole = dipole["transverse"].loss_factor
+        except Exception:
+            logger.warning("Dipole (m=1) processing failed; monopole result is still valid.")
+
+    return RoundWakeResult(
+        s=mono.s,
+        Wlong=mono.W,
+        Wdipole=Wdipole,
+        loss_long=mono.loss_factor,
+        kick_dipole=kick_dipole,
+        bunch=mono.bunch,
+        peak=mono.peak,
+        rms_spread=mono.rms_spread,
+    )
 
 
 def _postprocess_flat(

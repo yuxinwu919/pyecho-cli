@@ -130,7 +130,7 @@ def plot_wake_round(
         ax.plot(
             s * 1e3,
             B_scaled,
-            "k--",
+            "k-",
             linewidth=1.2,
             label="Bunch shape",
         )
@@ -139,16 +139,23 @@ def plot_wake_round(
     if show_loss:
         loss = _extract_loss(result_or_s)
         if loss is not None:
+            # Auto-detect units from result object
+            loss_units = _extract_units(result_or_s) or "V/pC"
             ax.text(
                 0.98,
                 0.95,
-                f"κ = {loss:.4f} V/pC",
+                f"Loss = {loss:.4f} {loss_units}",
                 transform=ax.transAxes,
                 ha="right",
                 va="top",
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
             )
 
+    # Auto-detect ylabel from result units if not explicitly overridden
+    if ylabel == "Wake potential [V/pC]" and not isinstance(result_or_s, np.ndarray):
+        auto_units = _extract_units(result_or_s)
+        if auto_units and auto_units != "V/pC":
+            ylabel = f"Wake potential [{auto_units}]"
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title or "Wake Potential")
@@ -157,6 +164,90 @@ def plot_wake_round(
 
     fig.tight_layout()
     return fig, ax
+
+
+# ---------------------------------------------------------------------------
+# plot_round_wake
+# ---------------------------------------------------------------------------
+
+def plot_round_wake(
+    result: Any,
+    *,
+    title: str = "",
+    figsize: tuple[int, int] = (10, 8),
+    bunch: np.ndarray | None = None,
+) -> tuple["plt.Figure", "np.ndarray"]:
+    """Plot round-geometry wake potentials in subplots.
+
+    Parameters
+    ----------
+    result : RoundWakeResult
+        Result from :func:`pyecho.api.quick_postprocess` with round geometry.
+    title : str
+        Overall figure title.
+    figsize : tuple
+        Figure size ``(width, height)`` in inches.
+    bunch : np.ndarray, optional
+        Bunch current profile (same length as wake arrays).  If not
+        provided, auto-extracted from ``result.bunch``.
+
+    Returns
+    -------
+    tuple[plt.Figure, np.ndarray of plt.Axes]
+    """
+    import numpy as np
+    _, plt = _get_matplotlib()
+
+    has_dipole = result.Wdipole is not None
+    n_panels = 2 if has_dipole else 1
+    fig, axes = plt.subplots(n_panels, 1, figsize=figsize, sharex=True)
+    if n_panels == 1:
+        axes = np.array([axes])
+
+    s_mm = result.s * 1e3  # m → mm
+
+    # ── Top: monopole (m=0) — longitudinal wake ──
+    axes[0].plot(s_mm, result.Wlong, "b-", linewidth=1.5)
+    axes[0].axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
+    axes[0].set_ylabel("Longitudinal wake potential [V/pC]")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].text(
+        0.98, 0.95, f"Loss_long = {result.loss_long:.4f} V/pC",
+        transform=axes[0].transAxes, ha="right", va="top",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+    )
+
+    # ── Bottom: dipole (m=1) — modal coefficient ──
+    if has_dipole:
+        axes[1].plot(s_mm, result.Wdipole, "r-", linewidth=1.5)
+        axes[1].axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
+        axes[1].set_ylabel("Dipole wake potential [V/pC/m²]")
+        axes[1].grid(True, alpha=0.3)
+        if result.kick_dipole is not None:
+            axes[1].text(
+                0.98, 0.95, f"Kick_dipole = {result.kick_dipole:.4f} V/pC/m",
+                transform=axes[1].transAxes, ha="right", va="top",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
+            )
+
+    # ── Bunch overlay ──
+    if bunch is None:
+        bunch = result.bunch
+    if bunch is not None:
+        b_max = np.max(np.abs(bunch))
+        for i, ax in enumerate(axes):
+            W_data = result.Wlong if i == 0 else result.Wdipole
+            w_max = np.max(np.abs(W_data))
+            bunch_scaled = bunch * (w_max / b_max) if b_max > 0 and w_max > 0 else bunch
+            ax.plot(s_mm, bunch_scaled, "k-", linewidth=1.2, alpha=0.6,
+                    label="Bunch (Iz0)")
+        axes[0].legend(loc="upper left", fontsize=8)
+
+    axes[-1].set_xlabel("s [mm]")
+    if title:
+        fig.suptitle(title, fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    return fig, axes
 
 
 # ---------------------------------------------------------------------------
@@ -194,9 +285,9 @@ def plot_flat_wake(
     s_m = result.s  # in meters
     s = s_m * 1e3  # m → mm
     components = [
-        (result.Wlong, result.loss_long, "Longitudinal wake [V/pC]", f"κ_long = {result.loss_long:.6f} V/pC"),
-        (result.Wquad, result.kick_quad, "Quadrupole wake [V/pC/mm]", f"κ_quad = {result.kick_quad:.6f} V/pC/mm"),
-        (result.Wdipole, result.kick_dipole, "Dipole wake [V/pC/mm]", f"κ_dipole = {result.kick_dipole:.6f} V/pC/mm"),
+        (result.Wlong, result.loss_long, "Longitudinal wake [V/pC]", f"Loss_long = {result.loss_long:.6f} V/pC"),
+        (result.Wquad, result.kick_quad, "Quadrupole wake [V/pC/mm]", f"Kick_quad = {result.kick_quad:.6f} V/pC/mm"),
+        (result.Wdipole, result.kick_dipole, "Dipole wake [V/pC/mm]", f"Kick_dipole = {result.kick_dipole:.6f} V/pC/mm"),
     ]
 
     fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True)
@@ -707,6 +798,18 @@ def _extract_loss(result_or_s: Any) -> float | None:
             first = next(iter(modes.values()))
             if first.wake_processed:
                 return first.wake_processed.loss_factor
+    return None
+
+
+def _extract_units(result_or_s: Any) -> str | None:
+    """Try to extract physical units from a result object."""
+    obj = result_or_s
+    if isinstance(obj, np.ndarray):
+        return None
+    if hasattr(obj, "units"):
+        return obj.units
+    if hasattr(obj, "wake_processed") and obj.wake_processed:
+        return getattr(obj.wake_processed, "units", None)
     return None
 
 

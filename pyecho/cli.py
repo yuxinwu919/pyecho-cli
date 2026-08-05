@@ -29,7 +29,7 @@ import numpy as np
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.syntax import Syntax
 from rich.tree import Tree
@@ -199,52 +199,52 @@ def _generate_input_in(
     """Generate an ECHO2D ``input_in.txt`` file."""
     content = f"""%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
 
-GeometryFile={geometry_file}	% -(Gaussian beam)
-Units={units}	% -m/cm/mm
-GeometryType={geometry_type}	 % recta / round
-Width={width}	% in meters
-SymmetryCondition={symmetry}	 % magn/elec
-Convex=1
+GeometryFile={geometry_file}\t% geometry file, '-' for Gaussian beam
+Units={units}\t% m / cm / mm
+GeometryType={geometry_type}\t % recta / round
+Width={width}\t% pipe half-width [m], 0 for round
+SymmetryCondition={symmetry}\t % magn / elec
+Convex=1\t% 1=convex
 
 %%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%
 
-InPartFile=-
-BunchSigma={bunch_sigma}
-Offset={offset}
-InjectionTimeStep=0
+InPartFile=-\t% input particle file, '-' for none
+BunchSigma={bunch_sigma}\t% RMS bunch length [m]
+Offset={offset}\t% beam offset in mesh lines, -1=on-axis
+InjectionTimeStep=0\t% time step to inject beam
 
 %%%%%%%%%%%%%%  field %%%%%%%%%%%%%%%%%%%%%%
 
-InFieldDir=-
-PortDir=-
-PortPosition=-1
+InFieldDir=-\t% input field directory, '-' for none
+PortDir=-\t% port directory, '-' for none
+PortPosition=-1\t% port position, -1=auto
 
 %%%%%%%%%%%%%% model %%%%%%%%%%%%%%%%%%%%%%%
 
-WakeIntMethod={wake_method}
-Modes={modes} 
-ParticleMotion=0
-ParticleField=1
-CurrentFilter=0
-ParticleLoss=0
+WakeIntMethod={wake_method}\t% ind=indirect, dir=direct
+Modes={modes} \t% azimuthal mode numbers
+ParticleMotion=0\t% 1=track particles
+ParticleField=1\t% 1=compute particle field
+CurrentFilter=0\t% current filter flag
+ParticleLoss=0\t% 1=compute particle loss
 
 %%%%%%%%%%%%%% mesh %%%%%%%%%%%%%%%%%%%%%%%
 
-MeshLength={mesh_length}
-StartPosition=0
-TimeSteps=-1
-StepY={step_y}
-StepZ={step_z}
-NStepsInConductive=0
-AdjustMesh={adjust_mesh}
-MeshMotionFile=-
+MeshLength={mesh_length}\t% moving mesh length [grid lines]
+StartPosition=0\t% mesh start position [grid lines]
+TimeSteps=-1\t% number of time steps, -1=auto
+StepY={step_y}\t% transverse mesh step [m]
+StepZ={step_z}\t% longitudinal mesh step [m]
+NStepsInConductive=0\t% steps inside conductive wall
+AdjustMesh={adjust_mesh}\t% 1=auto-adjust mesh
+MeshMotionFile=-\t% mesh motion file, '-' for v=c
 
 %%%%%%%%%%%%%% monitors %%%%%%%%%%%%%%%%%%%%%%%
 
-DumpField=0
-DumpParticles=0
-DumpCurrent=0
-DumpMesh=0
+DumpField=0\t% 1=dump EM field to disk
+DumpParticles=0\t% 1=dump particle data
+DumpCurrent=0\t% 1=dump current profile
+DumpMesh=0\t% 1=dump mesh geometry
 """
     out_path.write_text(content, encoding="utf-8")
 
@@ -284,14 +284,18 @@ def _print_example_summary(
             lines.append(
                 f"  Dipole kick:       [cyan]{result.kick_dipole:.6f} V/pC/mm[/cyan]"
             )
-        elif isinstance(result, WakeResult):
+        elif hasattr(result, "loss_long"):  # RoundWakeResult
             lines.append("")
             lines.append(
-                f"  Loss factor:  [cyan]{result.loss_factor:.6f} V/pC[/cyan]"
+                f"  Loss_long:  [cyan]{result.loss_long:.6f} V/pC[/cyan]"
             )
             lines.append(
-                f"  Peak:         [cyan]{result.peak:.4f} V/pC[/cyan]"
+                f"  Peak:       [cyan]{result.peak:.4f} V/pC[/cyan]"
             )
+            if result.Wdipole is not None and result.kick_dipole is not None:
+                lines.append(
+                    f"  Kick_dipole: [cyan]{result.kick_dipole:.4f} V/pC/m[/cyan]"
+                )
 
     console.print(
         Panel.fit("\n".join(lines), title="Example Complete")
@@ -323,9 +327,9 @@ def example_cmd(
         bool,
         typer.Option("--no-plot", help="Skip wake plots"),
     ] = False,
-    dry_run: Annotated[
+    preview: Annotated[
         bool,
-        typer.Option("--dry-run", help="Preview steps without executing"),
+        typer.Option("--preview", help="Preview steps without executing"),
     ] = False,
     threads: Annotated[
         int,
@@ -406,15 +410,16 @@ def example_cmd(
 
     out_dir = Path(output or f"{name}_example")
 
-    # ── Dry run ──
+    # ── Preview ──
     steps = [
-        f"Create directory [cyan]{out_dir}[/cyan]",
+        f"Create project [cyan]{out_dir}[/cyan] with .echo2d.yaml",
+        f"Create run [cyan]runs/001_{name.replace('-', '_')}/[/cyan]",
         f"Copy geometry [cyan]{ex['geometry']}[/cyan]",
         f"Generate [cyan]input_in.txt[/cyan]",
         f"Run ECHO2D solver ({threads} thread(s))",
         f"Postprocess wake data",
     ]
-    if dry_run:
+    if preview:
         lines = "\n".join(
             f"  [bold]Step {i+1}[/bold]  {s}" for i, s in enumerate(steps)
         )
@@ -422,17 +427,53 @@ def example_cmd(
         return
 
     # ── Execute ──
+    from pyecho.project import (
+        ProjectManifest, RunManifest, SubRunInfo,
+        save_project, save_run_meta,
+    )
+
+    run_name = name.replace("-", "_")
+    run_dir = out_dir / "runs" / f"001_{run_name}"
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        # Step 1: create output dir
-        task = progress.add_task("Creating output directory...", total=None)
+        # Step 1: create project structure
+        task = progress.add_task("Creating project structure...", total=None)
         out_dir.mkdir(parents=True, exist_ok=True)
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        gt = p["geometry_type"]
+        if gt == "recta":
+            sub_runs = [
+                SubRunInfo(symmetry="magn", output_dir="magn/"),
+                SubRunInfo(symmetry="elec", output_dir="elec/"),
+            ]
+            for sr in sub_runs:
+                (run_dir / sr.output_dir.strip("/")).mkdir(parents=True, exist_ok=True)
+        else:
+            sub_runs = [SubRunInfo(symmetry="magn", output_dir="round/")]
+            (run_dir / "round").mkdir(parents=True, exist_ok=True)
+
+        for sub in ("wake", "field", "particles"):
+            (run_dir / "processed" / sub).mkdir(parents=True, exist_ok=True)
+
+        run_manifest = RunManifest(
+            id="001", name=run_name, geometry_type=gt,
+            sub_runs=sub_runs, status="pending",
+        )
+        save_run_meta(run_manifest, run_dir)
+        proj_manifest = ProjectManifest(
+            name=out_dir.name, template="", geometry_type=gt,
+            runs=[run_manifest],
+        )
+        save_project(proj_manifest, out_dir)
+
         progress.update(
             task, completed=True,
-            description=f"[green]✓[/green] Directory [cyan]{out_dir}[/cyan]"
+            description=f"[green]✓[/green] Project [cyan]{out_dir.name}[/cyan]"
         )
 
         # Step 2: copy geometry
@@ -443,7 +484,7 @@ def example_cmd(
                 f"[red]Template not found: {geo_src}[/red]"
             )
             raise typer.Exit(1)
-        geo_dst = out_dir / ex["geometry"]
+        geo_dst = run_dir / ex["geometry"]
         geo_dst.write_bytes(geo_src.read_bytes())
         progress.update(
             task, completed=True,
@@ -453,7 +494,7 @@ def example_cmd(
         # Step 3: generate input_in.txt
         task = progress.add_task("Generating input_in.txt...", total=None)
         _generate_input_in(
-            out_dir / "input_in.txt",
+            run_dir / "input_in.txt",
             ex["geometry"],
             units=p["units"],
             geometry_type=p["geometry_type"],
@@ -476,12 +517,12 @@ def example_cmd(
             progress.stop()
             console.print()
             console.print(
-                f"[bold green]✓[/bold green] Files ready in "
+                f"[bold green]✓[/bold green] Project ready in "
                 f"[cyan]{out_dir}[/cyan]"
             )
             console.print(
                 f"  Run: [dim]cd {out_dir} && "
-                f"echo2d run single --threads {threads}[/dim]"
+                f"echo2d run start --threads {threads}[/dim]"
             )
             return
 
@@ -492,13 +533,17 @@ def example_cmd(
         )
         from pyecho.runner import ECHO2DRunner
 
-        runner = ECHO2DRunner(work_dir=str(out_dir))
+        runner = ECHO2DRunner(work_dir=str(run_dir))
         try:
             result = runner.run(
                 np=threads,
                 show_progress=False,
             )
             elapsed = result.metadata.elapsed_seconds
+            # Update run status
+            from pyecho.project import update_run_status as _upd
+            for sr in sub_runs:
+                _upd(run_dir, sr.symmetry, "completed", elapsed)
             progress.update(
                 task, completed=True,
                 description=(
@@ -520,7 +565,7 @@ def example_cmd(
             from pyecho.api import quick_postprocess
             from pyecho.datamodel import FlatWakeResult, WakeResult
 
-            result = quick_postprocess(str(out_dir), geometry=p["geometry_type"])
+            result = quick_postprocess(str(run_dir), geometry=p["geometry_type"])
             progress.update(
                 task, completed=True,
                 description="[green]✓[/green] Postprocessing done",
@@ -541,18 +586,27 @@ def example_cmd(
         console.print("[dim]Launching plot...[/dim]")
         try:
             import matplotlib.pyplot as plt
+            wake_out = run_dir / "processed" / "wake"
+            wake_out.mkdir(parents=True, exist_ok=True)
 
             if isinstance(result, FlatWakeResult):
                 from pyecho.visualize import plot_flat_wake
-                data_dir = _resolve_plot_data_dir(str(out_dir))
+                data_dir = _resolve_plot_data_dir(str(run_dir))
                 offset = _read_offset_from_dir(data_dir)
                 from pyecho.parser import load_bunch_profile
                 _, bunch = load_bunch_profile(data_dir, offset, result.s)
-                plot_flat_wake(result, bunch=bunch)
+                fig, axes = plot_flat_wake(result, bunch=bunch)
+                save_path = wake_out / "wake_plot.png"
+                fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
+                console.print(f"  [dim]Plot saved to {save_path}[/dim]")
+                plt.show()
             else:
-                from pyecho.visualize import plot_wake_round
-                plot_wake_round(result)
-            plt.show()
+                from pyecho.visualize import plot_round_wake
+                fig, axes = plot_round_wake(result)
+                save_path = wake_out / "wake_plot.png"
+                fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
+                console.print(f"  [dim]Plot saved to {save_path}[/dim]")
+                plt.show()
         except Exception as exc:
             console.print(f"[yellow]Warning:[/yellow] Plot error: {exc}")
 
@@ -1269,16 +1323,17 @@ def geometry_create(
 @geometry_app.command("validate")
 def geometry_validate(
     geometry_file: Annotated[str, typer.Argument(help="Geometry file path")],
-    units: Annotated[
-        str,
-        typer.Option("--units", "-u", help="Units: cm, mm, m"),
-    ] = "cm",
-    geometry_type: Annotated[
-        str,
-        typer.Option("--type", "-t", help="Geometry type"),
-    ] = "round",
+    config: Annotated[
+        Optional[str],
+        typer.Option("--config", "-c", help="input_in.txt for cross-checking Units/GeometryType"),
+    ] = None,
 ) -> None:
-    """Validate a geometry file."""
+    """Validate a geometry file.
+
+    The geometry file contains raw (z, r) coordinates.  Units are
+    specified in ``input_in.txt`` (not in the geometry file itself).
+    Use ``--config`` to cross-check geometry type and units.
+    """
     from pyecho.geometry import load_geometry
 
     try:
@@ -1290,14 +1345,23 @@ def geometry_validate(
     n_seg = len(geo.get("segments", []))
     n_mat = len(geo.get("materials", []))
 
-    console.print(
-        Panel.fit(
-            f"[bold green]✓[/bold green] Geometry is valid.\n"
-            f"  Materials: {n_mat}\n"
-            f"  Segments:  {n_seg}",
-            title="Validation Result",
-        )
-    )
+    lines = [
+        f"[bold green]✓[/bold green] Geometry is valid.",
+        f"  Materials: {n_mat}",
+        f"  Segments:  {n_seg}",
+    ]
+
+    if config:
+        from pyecho.config import load_params
+        try:
+            params = load_params(config)
+            lines.append("")
+            lines.append(f"  [dim]Config Units:       {params.Units}[/dim]")
+            lines.append(f"  [dim]Config GeometryType: {params.GeometryType}[/dim]")
+        except Exception as exc:
+            lines.append(f"  [yellow]Warning:[/yellow] Could not read config: {exc}")
+
+    console.print(Panel.fit("\n".join(lines), title="Validation Result"))
 
 
 @geometry_app.command("show")
@@ -1444,15 +1508,31 @@ def config_generate(
 @config_app.command("validate")
 def config_validate(
     input_file: Annotated[
-        str,
-        typer.Argument(help="Input file path"),
-    ] = "input_in.txt",
+        Optional[str],
+        typer.Argument(help="Input file path (auto-detected in project context)"),
+    ] = None,
 ) -> None:
-    """Validate input_in.txt."""
+    """Validate input_in.txt.
+
+    If no file is specified, searches for input_in.txt in:
+    1. Current directory
+    2. Nearest runs/*/ directory (project context)
+    """
     from pyecho.config import load_params
+    from pyecho.project import find_project_root as _find_proj
+
+    # Auto-detect input_in.txt
+    target = _resolve_input_file(input_file)
+    if target is None:
+        console.print(
+            "[bold red]Error:[/bold red] No input_in.txt found.\n"
+            "Specify the file path, or run from a project directory.\n"
+            "Generate one with: [cyan]echo2d config generate[/cyan]"
+        )
+        raise typer.Exit(1)
 
     try:
-        params = load_params(input_file)
+        params = load_params(target)
     except Exception as exc:
         console.print(f"[bold red]Error:[/bold red] Validation failed: {exc}")
         raise typer.Exit(1)
@@ -1460,6 +1540,7 @@ def config_validate(
     console.print(
         Panel.fit(
             f"[bold green]✓[/bold green] Configuration is valid.\n"
+            f"  File:     [dim]{target}[/dim]\n"
             f"  Geometry: {params.GeometryFile} ({params.GeometryType})\n"
             f"  Bunch σ:  {params.BunchSigma} m\n"
             f"  Modes:    {params.Modes}\n"
@@ -1473,9 +1554,9 @@ def config_validate(
 def config_show(
     ctx: typer.Context,
     input_file: Annotated[
-        str,
-        typer.Argument(help="Input file path"),
-    ] = "input_in.txt",
+        Optional[str],
+        typer.Argument(help="Input file path (auto-detected in project context)"),
+    ] = None,
 ) -> None:
     """Display configuration."""
     # Support global --json flag for machine-readable output
@@ -1483,17 +1564,25 @@ def config_show(
 
     from pyecho.config import load_params
 
+    target = _resolve_input_file(input_file)
+    if target is None:
+        console.print(
+            "[bold red]Error:[/bold red] No input_in.txt found.\n"
+            "Specify the file path, or run from a project directory."
+        )
+        raise typer.Exit(1)
+
     try:
-        params = load_params(input_file)
+        params = load_params(target)
     except Exception as exc:
-        console.print(f"[bold red]Error:[/bold red] Failed to parse {input_file}: {exc}")
+        console.print(f"[bold red]Error:[/bold red] Failed to parse {target}: {exc}")
         raise typer.Exit(1)
 
     if _json:
         console.print_json(params.model_dump_json(indent=2))
         return
 
-    table = Table(title=f"Configuration: {input_file}")
+    table = Table(title=f"Configuration: {target}")
     table.add_column("Parameter", style="cyan")
     table.add_column("Value", style="green")
 
@@ -1680,6 +1769,7 @@ def run_start(
             console.print(f"[bold red]Error:[/bold red] No input_in.txt in {target_dir}")
             raise typer.Exit(1)
 
+        # Read and update symmetry
         original = input_file.read_text(encoding="utf-8")
         if f"SymmetryCondition={sym}" not in original:
             import re
@@ -1690,11 +1780,60 @@ def run_start(
             )
             input_file.write_text(updated, encoding="utf-8")
 
+        # Verify geometry file is present in the run directory
+        from pyecho.config import load_params as _load_params
+        try:
+            params = _load_params(input_file)
+            geom_name = params.GeometryFile
+            if geom_name and geom_name != "-":
+                geom_in_run = target_dir / geom_name
+                if not geom_in_run.is_file():
+                    # Try to find it: templates dir, project root, or adjacent to input
+                    _copied = _copy_geometry_to_run(target_dir, geom_name, proj_dir)
+                    if not _copied:
+                        console.print(
+                            f"[bold red]Error:[/bold red] Geometry file "
+                            f"'{geom_name}' not found in {target_dir}.\n"
+                            f"Place the geometry file in the run directory "
+                            f"or use [cyan]echo2d config generate[/cyan] "
+                            f"to recreate input_in.txt."
+                        )
+                        raise typer.Exit(1)
+        except Exception:
+            pass  # If we can't parse params, let ECHO2D report the error
+
         # Run ECHO2D
         t_start = time.time()
         try:
             runner = ECHO2DRunner(target_dir, executable)
-            result = runner.run(params=None, np=threads, timeout=timeout, show_progress=True)
+
+            # Use run_stream with Rich progress bar (same as run single)
+            gen = runner.run_stream(params=None, np=threads, timeout=timeout)
+            result = None
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]ECHO2D {task.fields[sym]}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>5.0f}%"),
+                TimeElapsedColumn(),
+                console=console,
+            ) as pbar:
+                task = pbar.add_task(
+                    "Simulating...", total=100, sym=sym,
+                )
+                while True:
+                    try:
+                        update = next(gen)
+                        pct = min(float(update.get("percent", 0)), 100)
+                        pbar.update(
+                            task, completed=pct,
+                            description="",
+                        )
+                    except StopIteration as exc:
+                        result = exc.value
+                        break
+                pbar.update(task, completed=100)
+
             elapsed = time.time() - t_start
 
             # Collect output files produced in work_dir into subdirectory
@@ -1885,9 +2024,9 @@ def run_single(
         bool,
         typer.Option("--no-progress", help="Hide progress output"),
     ] = False,
-    dry_run: Annotated[
+    preview: Annotated[
         bool,
-        typer.Option("--dry-run", help="Show what would be executed"),
+        typer.Option("--preview", help="Show what would be executed"),
     ] = False,
 ) -> None:
     """Run a single ECHO2D simulation (legacy mode).
@@ -1928,13 +2067,13 @@ def run_single(
         )
         raise typer.Exit(1)
 
-    if dry_run:
+    if preview:
         console.print(Panel.fit(
             f"Working dir: [cyan]{wdir}[/cyan]\n"
             f"Executable:  [cyan]{executable or 'auto-detect'}[/cyan]\n"
             f"Threads:     [cyan]{np}[/cyan]\n"
             f"Config:      [cyan]{config or 'input_in.txt'}[/cyan]",
-            title="Dry Run",
+            title="Preview",
         ))
         return
 
@@ -2041,7 +2180,7 @@ def run_batch(
 
 @postprocess_app.command("wake")
 def postprocess_wake(
-    output_dir: Annotated[str, typer.Argument(help="Output directory")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID (e.g. 001)")],
     wake_type: Annotated[
         Optional[list[str]],
         typer.Option("--type", "-t", help="Wake type(s)"),
@@ -2059,8 +2198,20 @@ def postprocess_wake(
         typer.Option("--plot", "-p", help="Plot the wake"),
     ] = False,
 ) -> None:
-    """Post-process wake results."""
+    """Post-process wake results.
+
+    The output directory can be:
+    - A run ID (e.g. ``001``) — auto-resolved via the project manifest
+    - A relative or absolute path to a run/output directory
+    """
     from pyecho.api import quick_postprocess
+    from pyecho.project import resolve_run_dir
+
+    # Resolve run ID (e.g. "001") to actual directory path
+    resolved = resolve_run_dir(output_dir)
+    if resolved is not None:
+        output_dir = str(resolved)
+        console.print(f"  [dim]Run directory: {output_dir}[/dim]")
 
     try:
         result = quick_postprocess(output_dir, geometry=geometry)
@@ -2069,19 +2220,47 @@ def postprocess_wake(
         raise typer.Exit(1)
 
     # Display summary
-    from pyecho.datamodel import WakeResult, FlatWakeResult
+    from pyecho.datamodel import RoundWakeResult, FlatWakeResult
 
-    if isinstance(result, WakeResult):
+    # Resolve processed/ output directory
+    out_path = Path(output_dir).resolve()
+    processed_dir = _find_processed_dir(out_path)
+    wake_out = processed_dir / "wake"
+    wake_out.mkdir(parents=True, exist_ok=True)
+
+    if isinstance(result, RoundWakeResult):
         console.print(
             Panel.fit(
                 f"[bold green]✓ Wake processed[/bold green]\n"
-                f"  Label:       [cyan]{result.label}[/cyan]\n"
-                f"  Loss factor: [cyan]{result.loss_factor:.6f} V/pC[/cyan]\n"
-                f"  Peak:        [cyan]{result.peak:.4f} V/pC[/cyan]\n"
-                f"  RMS spread:  [cyan]{result.rms_spread:.4f} V/pC[/cyan]",
-                title="Wake Result",
+                f"  Loss_long:  [cyan]{result.loss_long:.6f} V/pC[/cyan]\n"
+                f"  Peak:       [cyan]{result.peak:.4f} V/pC[/cyan]",
+                title="Round Wake Result",
             )
         )
+        # Save monopole (m=0) — longitudinal wake
+        _save_wake_round_data(result.s, result.Wlong, "monopole", "V/pC", wake_out / "Wlong.txt")
+        summary_lines = [
+            f"Geometry: round",
+            f"",
+            f"[Monopole (m=0)] — longitudinal wake potential",
+            f"  Loss_long:  {result.loss_long:.6f} V/pC",
+            f"  Peak:       {result.peak:.4f} V/pC",
+            f"  RMS spread: {result.rms_spread:.4f} V/pC",
+        ]
+        # Save dipole (m=1) if available
+        if result.Wdipole is not None:
+            _save_wake_round_data(result.s, result.Wdipole, "dipole", "V/pC/m²", wake_out / "Wdipole.txt")
+            kd = result.kick_dipole if result.kick_dipole is not None else 0.0
+            summary_lines.extend([
+                "",
+                f"[Dipole (m=1)] — modal coefficient",
+                f"  Kick_dipole: {kd:.4f} V/pC/m",
+            ])
+            console.print(f"  [dim]Dipole (m=1) saved, Kick_dipole = {kd:.4f} V/pC/m[/dim]")
+        # Write unified summary
+        (wake_out / "summary.txt").write_text("\n".join(summary_lines), encoding="utf-8")
+        # Update run manifest
+        _try_update_processed_manifest(out_path, loss_long=result.loss_long, peak=result.peak)
     elif isinstance(result, FlatWakeResult):
         console.print(
             Panel.fit(
@@ -2092,6 +2271,17 @@ def postprocess_wake(
                 title="Rectangular Wake Result",
             )
         )
+        # Save processed data
+        _save_wake_flat(result, wake_out)
+        # Update run manifest
+        _try_update_processed_manifest(
+            out_path,
+            loss_long=result.loss_long,
+            kick_quad=result.kick_quad,
+            kick_dipole=result.kick_dipole,
+        )
+
+    console.print(f"  [dim]Data saved to {wake_out}/[/dim]")
 
     if plot:
         import matplotlib.pyplot as plt
@@ -2102,16 +2292,21 @@ def postprocess_wake(
             from pyecho.parser import load_bunch_profile
             _, bunch = load_bunch_profile(data_dir, offset, result.s)
             fig, axes = plot_flat_wake(result, bunch=bunch)
+            if output:
+                save_path = f"{output}_wake.png"
+            else:
+                save_path = str(wake_out / "wake_plot.png")
+            fig.savefig(save_path, dpi=150, bbox_inches="tight")
+            console.print(f"  [dim]Plot saved to {save_path}[/dim]")
+            plt.show()
         else:
-            from pyecho.visualize import plot_wake_round
-            data_dir = _resolve_plot_data_dir(output_dir)
-            offset = _read_offset_from_dir(data_dir)
-            from pyecho.parser import load_bunch_profile
-            _, bunch = load_bunch_profile(data_dir, offset, None)
-            fig, ax = plot_wake_round(result, bunch=bunch)
-        if output:
-            fig.savefig(f"{output}_wake.png", dpi=150, bbox_inches="tight")
-        plt.show()
+            from pyecho.visualize import plot_round_wake
+
+            fig, axes = plot_round_wake(result)
+            save_path = str(wake_out / "wake_plot.png") if not output else f"{output}_wake.png"
+            fig.savefig(save_path, dpi=150, bbox_inches="tight")
+            console.print(f"  [dim]Plot saved to {save_path}[/dim]")
+            plt.show()
 
 
 @postprocess_app.command("all")
@@ -2827,6 +3022,95 @@ def _detect_python_env() -> tuple[str, str]:
     return ("system", f"system Python {py_ver}")
 
 
+def _copy_geometry_to_run(run_dir: Path, geom_name: str, proj_dir: Path) -> bool:
+    """Try to find and copy a geometry file into the run directory.
+
+    Searches:
+    1. Project templates directory (pyecho/templates/)
+    2. Project root directory
+    3. Adjacent runs
+
+    Returns True if the file was copied successfully.
+    """
+    import shutil as _shutil
+
+    # 1. Check pyecho templates
+    tmpl = _TEMPLATES_DIR / geom_name
+    if tmpl.is_file():
+        _shutil.copy2(str(tmpl), str(run_dir / geom_name))
+        console.print(f"  [dim]Copied geometry from templates: {geom_name}[/dim]")
+        return True
+
+    # 2. Check project root
+    proj_geom = proj_dir / geom_name
+    if proj_geom.is_file() and proj_geom.parent != run_dir:
+        _shutil.copy2(str(proj_geom), str(run_dir / geom_name))
+        console.print(f"  [dim]Copied geometry from project root: {geom_name}[/dim]")
+        return True
+
+    # 3. Check other runs in the same project
+    runs_dir = proj_dir / "runs"
+    if runs_dir.is_dir():
+        for child in runs_dir.iterdir():
+            if child.is_dir() and child != run_dir:
+                src = child / geom_name
+                if src.is_file():
+                    _shutil.copy2(str(src), str(run_dir / geom_name))
+                    console.print(f"  [dim]Copied geometry from run {child.name}[/dim]")
+                    return True
+
+    return False
+
+
+def _resolve_input_file(explicit: str | None) -> Path | None:
+    """Find input_in.txt with project-context awareness.
+
+    1. If *explicit* is given, use it directly.
+    2. Look for ``input_in.txt`` in the current directory.
+    3. Look in ``runs/*/`` subdirectories (project context).
+    4. Walk up to find a project root and look in ``runs/``.
+    """
+    if explicit:
+        p = Path(explicit)
+        if p.is_file():
+            return p.resolve()
+        return None
+
+    # Current directory
+    cwd = Path.cwd()
+    candidate = cwd / "input_in.txt"
+    if candidate.is_file():
+        return candidate
+
+    # Runs subdirectories
+    runs_dir = cwd / "runs"
+    if runs_dir.is_dir():
+        for child in sorted(runs_dir.iterdir(), reverse=True):
+            if child.is_dir():
+                f = child / "input_in.txt"
+                if f.is_file():
+                    return f
+
+    # Walk up to find project root, then check runs/
+    current = cwd
+    for _ in range(10):
+        if (current / ".echo2d.yaml").is_file():
+            rdir = current / "runs"
+            if rdir.is_dir():
+                for child in sorted(rdir.iterdir(), reverse=True):
+                    if child.is_dir():
+                        f = child / "input_in.txt"
+                        if f.is_file():
+                            return f
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    return None
+
+
 def _show_welcome() -> None:
     """Display the welcome / portal screen when ``echo2d`` is invoked
     without a subcommand."""
@@ -3199,56 +3483,68 @@ def _generate_corrugated_geometry(
     depth: float = 2.0,
     corr_gap: float = 3.0,
     period: float = 5.0,
-    num_periods: float = 10,
+    num_periods: int = 10,
 ) -> None:
     """Write a recta corrugated dechirper geometry file to *out_path*.
 
     The structure alternates between narrow-gap and wide-gap sections:
-    - Narrow gap (corrugation):  half_gap = corr_gap
-    - Wide gap (cavity):         half_gap = gap + depth
+    - Narrow gap (corrugation tooth): half_gap = corr_gap
+    - Wide gap (cavity):            half_gap = gap + depth
 
-    Each period = 2 segments (narrow + wide), each of length period/2.
+    Each period = 4 segments: step-down, narrow, step-up, wide.
+    The geometry uses a single material (conductive wall).
+    All coordinates in the geometry file are in the units specified
+    by ``Units`` in ``input_in.txt`` (typically mm for dechirpers).
+
+    Reference: Phys. Rev. STAB 18, 104401 (2015), N6 example.
     """
-    p2 = period / 2.0  # half-period
+    p2 = period / 2.0  # half-period width
     a_narrow = corr_gap
     a_wide = gap + depth
     L_total = num_periods * period
+    n_seg_total = 4 * num_periods + 1  # +1 for lead-in pipe
 
     lines = [
         f"% Corrugated dechirper geometry (recta)",
         f"% a_gap={gap} mm  h={depth} mm  g={corr_gap} mm  "
         f"p={period} mm  N={num_periods}",
+        f"% Total length: {L_total} mm",
         f"% Number of materials",
         f"1",
         f"% Number of elements in metal with conductive walls, "
         f"permeability, permitivity, conductivity",
-        f"0\t{a_wide}\t{L_total}\t{a_wide}\t0\t0\t0\t0\t0\t0",
-        f"% Number of elements in material 1, permitivity, "
-        f"permeability, conductivity",
-        f"{2 * num_periods} 1 1 0",
+        f"{n_seg_total} 1 1 0",
+        f"% Segments of lines and elipses with conductivity",
     ]
+
+    # Lead-in: a short pipe at the wide gap radius (1 mm before first tooth)
+    lead_in = -1.0
+    lines.append(
+        f"{lead_in}\t{a_wide}\t0\t{a_wide}\t0\t0\t0\t0\t1\t0"
+    )
 
     z = 0.0
     for i in range(num_periods):
-        # Narrow gap (corrugation tooth)
-        z_next = z + p2
+        # Step DOWN: wide → narrow
         lines.append(
             f"{z}\t{a_wide}\t{z}\t{a_narrow}\t0\t0\t0\t0\t1\t0"
         )
+        # Narrow horizontal section
+        z_narrow_end = z + p2
         lines.append(
-            f"{z}\t{a_narrow}\t{z_next}\t{a_narrow}\t0\t0\t0\t0\t1\t0"
+            f"{z}\t{a_narrow}\t{z_narrow_end}\t{a_narrow}\t0\t0\t0\t0\t1\t0"
         )
+        # Step UP: narrow → wide
         lines.append(
-            f"{z_next}\t{a_narrow}\t{z_next}\t{a_wide}\t0\t0\t0\t0\t1\t0"
+            f"{z_narrow_end}\t{a_narrow}\t{z_narrow_end}\t{a_wide}\t0\t0\t0\t0\t1\t0"
         )
-        z = z_next
-
-        # Wide gap (cavity)
-        z_next = z + p2
+        z = z_narrow_end
+        # Wide horizontal section
+        z_wide_end = z + p2
         lines.append(
-            f"{z}\t{a_wide}\t{z_next}\t{a_wide}\t0\t0\t0\t0\t1\t0"
+            f"{z}\t{a_wide}\t{z_wide_end}\t{a_wide}\t0\t0\t0\t0\t1\t0"
         )
-        z = z_next
+        z = z_wide_end
 
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -3293,15 +3589,16 @@ def _generate_dlw_geometry(
 
 
 def _resolve_plot_data_dir(output_dir: str) -> Path:
-    """Find the data directory (magn/ or elec/) for bunch loading.
+    """Find the data directory for bunch loading.
 
-    If output_dir itself is magn/ or elec/, use it directly.
-    Otherwise, look for magn/ or elec/ subdirectories.
+    Searches for round/, magn/, or elec/ subdirectory depending on
+    geometry type.  If output_dir itself is already the data directory,
+    use it directly.
     """
     p = Path(output_dir)
-    if p.name in ("magn", "elec"):
+    if p.name in ("round", "magn", "elec"):
         return p
-    for sub in ("magn", "elec"):
+    for sub in ("round", "magn", "elec"):
         if (p / sub).is_dir():
             return p / sub
     return p
@@ -3321,6 +3618,133 @@ def _read_offset_from_dir(data_dir: Path) -> int:
             if len(parts) >= 2:
                 return int(float(parts[1]))
     return 0
+
+
+def _find_processed_dir(output_dir: Path) -> Path:
+    """Find or create the processed/ directory for a run or project.
+
+    Walks up from *output_dir* looking for a run directory
+    (contains ``.run.yaml``) or project root (contains
+    ``.echo2d.yaml``), then returns ``<root>/processed/``.
+    Falls back to ``output_dir/processed/``.
+    """
+    current = output_dir
+    for _ in range(10):
+        if (current / ".run.yaml").is_file():
+            return current / "processed"
+        if (current / ".echo2d.yaml").is_file():
+            return current / "processed"
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    # Fallback: create processed/ under the output_dir
+    return output_dir / "processed"
+
+
+def _try_update_processed_manifest(
+    output_dir: Path,
+    loss_long: float | None = None,
+    kick_quad: float | None = None,
+    kick_dipole: float | None = None,
+    peak: float | None = None,
+) -> None:
+    """Update .run.yaml with processed wake results, best-effort."""
+    try:
+        from pyecho.project import find_project_root, update_processed
+
+        # Find the run directory from output_dir
+        current = output_dir
+        run_dir = None
+        for _ in range(10):
+            if (current / ".run.yaml").is_file():
+                run_dir = current
+                break
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+
+        if run_dir is not None:
+            update_processed(
+                run_dir,
+                loss_long=loss_long,
+                kick_quad=kick_quad,
+                kick_dipole=kick_dipole,
+                peak=peak,
+            )
+    except Exception:
+        pass  # best-effort, don't break on manifest update failure
+
+
+def _save_wake_round_data(
+    s: "np.ndarray",
+    W: "np.ndarray",
+    label: str,
+    units: str,
+    out_path: Path,
+) -> None:
+    """Save a single round-geometry wake component to disk.
+
+    Parameters
+    ----------
+    s : np.ndarray
+        s-coordinate [m].
+    W : np.ndarray
+        Wake potential data.
+    label : str
+        Component label (e.g. ``"monopole"``, ``"dipole"``).
+    units : str
+        Physical units string.
+    out_path : Path
+        Output file path.
+    """
+    import numpy as np
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    data = np.column_stack((s, W))
+    header = (
+        f"{label} wake (round geometry)\n"
+        f"s [mm]  {label} [{units}]"
+    )
+    np.savetxt(str(out_path), data, header=header, fmt="%.8e")
+
+
+def _save_wake_flat(result: Any, out_dir: Path) -> None:
+    """Save flat/recta wake result to disk.
+
+    Writes
+    ------
+    Wlong.txt
+        Two-column: s [mm], Wlong [V/pC].
+    Wquad.txt
+        Two-column: s [mm], Wquad [V/pC/mm].
+    Wdipole.txt
+        Two-column: s [mm], Wdipole [V/pC/mm] (if non-zero).
+    summary.txt
+        Loss factor, quad/dipole kick factors.
+    """
+    import numpy as np
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _save_col(name: str, y: "np.ndarray", unit: str) -> None:
+        data = np.column_stack((result.s, y))
+        header = f"{name} wake\ns [mm]  {name} [{unit}]"
+        np.savetxt(out_dir / f"{name}.txt", data, header=header, fmt="%.8e")
+
+    _save_col("Wlong", result.Wlong, "V/pC")
+    _save_col("Wquad", result.Wquad, "V/pC/mm")
+
+    if hasattr(result, "Wdipole") and np.any(result.Wdipole):
+        _save_col("Wdipole", result.Wdipole, "V/pC/mm")
+
+    # summary
+    summary = (
+        f"Geometry: rectangular (flat)\n"
+        f"Longitudinal loss: {result.loss_long:.6f} V/pC\n"
+        f"Quadrupole kick:   {result.kick_quad:.6f} V/pC/mm\n"
+        f"Dipole kick:       {result.kick_dipole:.6f} V/pC/mm\n"
+    )
+    (out_dir / "summary.txt").write_text(summary, encoding="utf-8")
 
 
 def _generate_dlw_readme(name: str) -> str:
