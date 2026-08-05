@@ -380,12 +380,12 @@ def example_cmd(
                 SubRunInfo(symmetry="magn", output_dir="magn/"),
                 SubRunInfo(symmetry="elec", output_dir="elec/"),
             ]
-            for sr in sub_runs:
-                (run_dir / sr.output_dir.strip("/")).mkdir(parents=True, exist_ok=True)
         else:
             sub_runs = [SubRunInfo(symmetry="magn", output_dir="round/")]
-            (run_dir / "round").mkdir(parents=True, exist_ok=True)
 
+        # Only pre-create processed/ subdirs — ECHO2D creates round/magn/elec
+        # automatically.  Pre-creating them causes the parser to shadow the
+        # actual output when both magn/ and elec/ exist beforehand.
         for sub in ("wake", "field", "particles"):
             (run_dir / "processed" / sub).mkdir(parents=True, exist_ok=True)
 
@@ -2326,6 +2326,10 @@ def postprocess_field(
     from pathlib import Path as _Path
     from pyecho.project import resolve_run_dir
     from pyecho.parser import OutputLoader
+    from pyecho.postprocess.fields import (
+        process_field_monitor,
+        synthesize_total_field_from_loader,
+    )
     import numpy as np
 
     # Resolve run ID to directory
@@ -2500,7 +2504,7 @@ def postprocess_particles(
         console.print(f"[red]Error loading particles: {exc}[/red]")
         raise typer.Exit(1)
 
-    Np = len(particles)
+    Np = int(particles.get("Np", 0))
     stats = compute_particle_statistics(particles)
 
     # Display statistics
@@ -2868,9 +2872,10 @@ def postprocess_all(
                 )
                 particles = load_echo_particles(part_file)
                 stats = compute_particle_statistics(particles)
-                results["particles"] = {"n_particles": len(particles), "stats": stats}
+                Np = int(particles.get("Np", 0))
+                results["particles"] = {"n_particles": Np, "stats": stats}
                 console.print(
-                    f"  [green]✓[/green] {len(particles)} particles loaded, "
+                    f"  [green]✓[/green] {Np} particles loaded, "
                     f"rms_z={stats.get('rms_z', 0):.4e} m"
                 )
                 # Save statistics
@@ -2878,7 +2883,7 @@ def postprocess_all(
                 part_out.mkdir(parents=True, exist_ok=True)
                 (part_out / "statistics.txt").write_text(
                     f"# ECHO2D Particle Statistics\n"
-                    f"# Np = {len(particles)}\n"
+                    f"# Np = {Np}\n"
                     + "\n".join(f"# {k} = {v}" for k, v in stats.items()),
                     encoding="utf-8",
                 )

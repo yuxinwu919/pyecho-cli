@@ -441,9 +441,9 @@ class PostProcessor:
         PostProcessError
             If both magn/ and elec/ data are not found.
         """
-        if self._effective_type not in ("flat",):
+        if self._effective_type not in ("recta",):
             raise PostProcessError(
-                "process_off_axis requires flat geometry (magn+elec)."
+                "process_off_axis requires recta geometry (magn+elec)."
             )
 
         magn_dir = self._magn_dir or self.loader.dir / "magn"
