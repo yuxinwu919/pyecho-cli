@@ -1547,6 +1547,106 @@ def config_show(
     console.print(table)
 
 
+@config_app.command("generate-bunch")
+def config_generate_bunch(
+    output: Annotated[
+        str,
+        typer.Option("--output", "-o", help="Output file (e.g. bunch.txt)"),
+    ] = "bunch.txt",
+    btype: Annotated[
+        str,
+        typer.Option("--type", "-t", help="Bunch type: gaussian, flattop"),
+    ] = "gaussian",
+    sigma: Annotated[
+        float,
+        typer.Option("--sigma", "-s", help="RMS bunch length [m]"),
+    ] = 0.001,
+    rise: Annotated[
+        float,
+        typer.Option("--rise", "-r", help="Rise/fall length [m] (flattop only)"),
+    ] = 0.0001,
+    flat_length: Annotated[
+        float,
+        typer.Option("--flat-length", "-l", help="Flat region length [m] (flattop only)"),
+    ] = 0.002,
+    n_points: Annotated[
+        int,
+        typer.Option("--n-points", "-n", help="Number of grid points"),
+    ] = 500,
+    n_sigma: Annotated[
+        float,
+        typer.Option("--n-sigma", help="Total width in sigma units (gaussian only)"),
+    ] = 6.0,
+) -> None:
+    """Generate a custom bunch profile file for ECHO2D.
+
+    Creates an ASCII file in the format ``% s[m] charge [normalized]``
+    that can be used with ``InPartFile=<file>`` in input_in.txt.
+
+    \\b
+    Examples:
+      echo2d config generate-bunch -o my_bunch.txt
+      echo2d config generate-bunch -t flattop --sigma 0.002 --rise 0.0002 -o flat.txt
+      echo2d config generate-bunch -t gaussian -s 0.001 -n 1000 --n-sigma 8
+    """
+    import numpy as np
+    from pyecho.preprocess.bunch import generate_gaussian, generate_flattop, save_bunch_profile
+
+    if btype == "gaussian":
+        s, rho = generate_gaussian(sigma=sigma, n_points=n_points, n_sigma=n_sigma)
+    elif btype in ("flattop", "flat_top", "flat-top"):
+        s, rho = generate_flattop(sigma=sigma, rise=rise, flat_length=flat_length, n_points=n_points)
+    else:
+        console.print(f"[red]Error: Unknown bunch type '{btype}'. Use 'gaussian' or 'flattop'.[/red]")
+        raise typer.Exit(1)
+
+    out_path = save_bunch_profile(output, s, rho)
+    console.print(
+        f"[green]✓ Bunch profile saved to [cyan]{out_path}[/cyan][/green]\n"
+        f"  Type:       {btype}\n"
+        f"  Points:     {n_points}\n"
+        f"  s range:    [{s[0]:.4f}, {s[-1]:.4f}] m\n"
+        f"  s step:     {s[1]-s[0]:.4e} m\n"
+        f"  Peak:       {np.max(rho):.4f}\n\n"
+        f"[dim]Set 'InPartFile={output}' in input_in.txt to use this profile.[/dim]"
+    )
+
+
+@config_app.command("validate-bunch")
+def config_validate_bunch(
+    filepath: Annotated[str, typer.Argument(help="Bunch profile file to validate")],
+) -> None:
+    """Validate an ECHO2D bunch profile file.
+
+    Checks format, s-coordinate monotonicity, uniform step, and
+    non-negative charge density.
+
+    \\b
+    Example:
+      echo2d config validate-bunch bunch.txt
+    """
+    from pyecho.preprocess.bunch import validate_bunch_profile
+
+    result = validate_bunch_profile(filepath)
+
+    if result["valid"]:
+        console.print(
+            Panel.fit(
+                f"[bold green]✓ Valid bunch profile[/bold green]\n"
+                f"  Points:  [cyan]{result['n_points']}[/cyan]\n"
+                f"  s range: [cyan]{result['s_range'][0]:.4f} → {result['s_range'][1]:.4f}[/cyan] m\n"
+                f"  s step:  [cyan]{result['s_step']:.4e}[/cyan] m\n"
+                f"  Peak:    [cyan]{result['peak']:.4f}[/cyan]",
+                title="Bunch Profile Validation",
+            )
+        )
+    else:
+        console.print(f"[bold red]✗ Invalid bunch profile[/bold red]")
+        for issue in result["issues"]:
+            console.print(f"  [red]• {issue}[/red]")
+        raise typer.Exit(1)
+
+
 # ===================================================================
 # run commands
 # ===================================================================
