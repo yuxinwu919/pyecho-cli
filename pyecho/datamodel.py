@@ -267,7 +267,7 @@ class RunMetadata:
     omp_threads: int = 1
     elapsed_seconds: float = 0.0
     hostname: str = ""
-    pyecho_version: str = "0.1.0"
+    pyecho_version: str = field(default_factory=lambda: __import__("pyecho._version", fromlist=["__version__"]).__version__)
     input_hash: str = ""
     output_hash: str = ""
     return_code: int = 0

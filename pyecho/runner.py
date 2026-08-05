@@ -33,6 +33,7 @@ from pyecho.datamodel import (
     RunMetadata,
     SimulationResult,
 )
+from pyecho._version import __version__
 from pyecho.errors import (
     ExecutableNotFoundError,
     RunnerError,
@@ -606,7 +607,7 @@ class ECHO2DRunner:
             omp_threads=int(os.environ.get("OMP_NUM_THREADS", 1)),
             elapsed_seconds=elapsed,
             hostname=socket.gethostname(),
-            pyecho_version="0.1.0",
+            pyecho_version=__version__,
             return_code=return_code,
         )
 

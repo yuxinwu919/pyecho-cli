@@ -67,6 +67,7 @@ from typing import Any
 
 import numpy as np
 
+from pyecho._version import __version__
 from pyecho.errors import PyEchoError
 
 logger = logging.getLogger(__name__)
@@ -486,7 +487,7 @@ def _resolve_result(result_or_dir: Any) -> Any:
     meta.omp_threads = 1
     meta.elapsed_seconds = 0.0
     meta.hostname = ""
-    meta.pyecho_version = "0.1.0"
+    meta.pyecho_version = __version__
     meta.input_hash = ""
     meta.output_hash = ""
     meta.return_code = 0

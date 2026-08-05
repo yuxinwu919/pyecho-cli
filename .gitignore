@@ -39,3 +39,4 @@ coverage.xml
 # Misc
 *.db
 tests/comprehensive_test/output/
+tests/\346\211\213\345\212\250\346\265\213\350\257\225/

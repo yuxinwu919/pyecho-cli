@@ -4,12 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyecho-cli"
-version = "0.1.0"
-description = "Python interface for ECHO2D electromagnetic wakefield solver"
+version = "0.2.0"
+description = "Python CLI toolkit for the ECHO2D electromagnetic wakefield solver"
 authors = [{name = "ECHO2D Team"}]
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
@@ -23,6 +33,10 @@ dependencies = [
     "pint>=0.22",
     "tqdm>=4.65",
 ]
+
+[project.urls]
+Homepage = "https://echo4d.de"
+Repository = "https://github.com/echo4d/echo2d"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
