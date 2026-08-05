@@ -2297,6 +2297,14 @@ def postprocess_field(
         bool,
         typer.Option("--synthesize", help="Synthesize total field from modal monitors"),
     ] = False,
+    total: Annotated[
+        Optional[str],
+        typer.Option("--total", help="Auto-synthesize and save MonitorTotal (specify output dir)"),
+    ] = None,
+    extract_point: Annotated[
+        Optional[str],
+        typer.Option("--extract-point", help="Extract point trace: 'z,r' in meters (e.g. 0.03,0.0015)"),
+    ] = None,
     x0: Annotated[
         float,
         typer.Option("--x0", help="Source transverse offset [m] for synthesis (default: 0)"),
@@ -2357,7 +2365,7 @@ def postprocess_field(
     out_path = _Path(output_dir).resolve()
     loader = OutputLoader(out_path)
 
-    # --list: show available monitors
+    # --list: show available monitors with details
     if list_monitors:
         monitors = loader.list_monitors()
         if not monitors:
@@ -2365,20 +2373,31 @@ def postprocess_field(
             return
         table = Table(title="Available Field Monitors")
         table.add_column("Mode", style="cyan")
-        table.add_column("Monitor ID", style="green")
-        table.add_column("Filename")
+        table.add_column("ID", style="green")
+        table.add_column("Component", style="yellow")
+        table.add_column("Type")
+        table.add_column("Shape", style="dim")
+        table.add_column("Filename", style="dim")
         for m, n in sorted(monitors):
-            table.add_row(str(m), str(n), f"Monitor_m{m}_N{n}.txt")
+            try:
+                mon = loader.load_monitor(mode=m, monitor_id=n)
+                comp = mon.field_component if mon else "?"
+                ttype = mon.time_type if mon else "?"
+                shape = str(mon.F.shape) if mon else "?"
+            except Exception:
+                comp, ttype, shape = "?", "?", "?"
+            table.add_row(str(m), str(n), comp, ttype, shape,
+                         f"Monitor_m{m:02d}_N{n:02d}.txt")
         console.print(table)
         return
 
-    # --synthesize: build total field from modal monitors
-    if synthesize:
+    # --synthesize or --total: build total field from modal monitors
+    if synthesize or total is not None:
         if component is None:
             console.print("[red]Error: --component is required for field synthesis.[/red]")
             raise typer.Exit(1)
         try:
-            total = synthesize_total_field_from_loader(
+            total_field = synthesize_total_field_from_loader(
                 magn_dir=loader._resolve_data_dir(),
                 component=component,
                 monitor_id=monitor_id,
@@ -2391,15 +2410,34 @@ def postprocess_field(
             console.print(f"[red]Error: Field synthesis failed: {exc}[/red]")
             raise typer.Exit(1)
 
-        console.print(f"[green]✓ Total field synthesized: {component}, shape={total.shape}[/green]")
+        console.print(f"[green]✓ Total field synthesized: {component}, shape={total_field.shape}[/green]")
+
+        if total is not None:
+            # Save as MonitorTotal format
+            total_dir = _Path(total)
+            total_dir.mkdir(parents=True, exist_ok=True)
+            out_file = total_dir / f"MonitorTotal_N{monitor_id:02d}.txt"
+            _save_monitor_total(out_file, total_field, component, monitor.time_type if monitor else "z", D or 0.05,
+                               T=None, Z=None, R=None)
+            console.print(f"  [dim]MonitorTotal saved to {out_file}[/dim]")
 
         if output:
-            np.savetxt(output, total, header=f"Total {component} field", fmt="%.8e")
+            np.savetxt(output, total_field, header=f"Total {component} field", fmt="%.8e")
             console.print(f"  [dim]Saved to {output}[/dim]")
 
         if plot:
-            _plot_field_2d(total, title=f"Total {component} field", output=output, no_show=no_show)
+            _plot_monitor_slice(total_field, title=f"Total {component} field",
+                               output=output, no_show=no_show)
         return
+
+    # --extract-point: shorthand for point extraction
+    if extract_point is not None:
+        parts = extract_point.split(",")
+        if len(parts) != 2:
+            console.print("[red]Error: --extract-point requires 'z,r' format (e.g. 0.03,0.0015)[/red]")
+            raise typer.Exit(1)
+        point_z = float(parts[0].strip())
+        point_r = float(parts[1].strip())
 
     # --load single monitor
     try:
@@ -2454,11 +2492,8 @@ def postprocess_field(
 
     # Plot
     if plot:
-        _plot_field_2d(
-            monitor.F, monitor.Z, monitor.R,
-            title=f"{monitor.field_component} — m{mode}_N{monitor_id}",
-            output=output, no_show=no_show,
-        )
+        _plot_monitor_slice(monitor, title=f"{monitor.field_component} — m{mode}_N{monitor_id}",
+                           output=output, no_show=no_show)
 
 
 @postprocess_app.command("particles")
@@ -2480,6 +2515,10 @@ def postprocess_particles(
         Optional[str],
         typer.Option("--output", "-o", help="Output file for particle statistics"),
     ] = None,
+    phase_space: Annotated[
+        bool,
+        typer.Option("--phase-space", help="Generate phase-space scatter plots"),
+    ] = False,
 ) -> None:
     """Post-process particle tracking data.
 
@@ -2489,6 +2528,7 @@ def postprocess_particles(
     \\b
     Examples:
       echo2d postprocess particles .                 # show statistics
+      echo2d postprocess particles . --phase-space    # phase-space plots
       echo2d postprocess particles . --to-astra out.astra -q 1e-9
     """
     from pathlib import Path as _Path
@@ -2569,6 +2609,36 @@ def postprocess_particles(
         except Exception as exc:
             console.print(f"[red]Error: ASTRA conversion failed: {exc}[/red]")
             raise typer.Exit(1)
+
+    # Phase-space plots
+    if phase_space:
+        import matplotlib.pyplot as plt
+        active = particles["status"] == 0
+        x = particles["x"][active][:5000]
+        y = particles["y"][active][:5000]
+        z = particles["z"][active][:5000]
+        px = particles["px"][active][:5000]
+        py = particles["py"][active][:5000]
+        pz = particles["pz"][active][:5000]
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        axes[0].scatter(x * 1e3, px, s=1, alpha=0.5)
+        axes[0].set_xlabel("x [mm]"); axes[0].set_ylabel("px [kg·m/s]")
+        axes[0].set_title("x–px phase space"); axes[0].grid(True, alpha=0.3)
+
+        axes[1].scatter(y * 1e3, py, s=1, alpha=0.5)
+        axes[1].set_xlabel("y [mm]"); axes[1].set_ylabel("py [kg·m/s]")
+        axes[1].set_title("y–py phase space"); axes[1].grid(True, alpha=0.3)
+
+        axes[2].scatter(z * 1e3, pz, s=1, alpha=0.5)
+        axes[2].set_xlabel("z [mm]"); axes[2].set_ylabel("pz [kg·m/s]")
+        axes[2].set_title("z–pz phase space"); axes[2].grid(True, alpha=0.3)
+
+        fig.suptitle(f"Phase Space (N={Np}, active only)", fontweight="bold")
+        fig.tight_layout()
+        if output:
+            fig.savefig(output.replace(".txt", "") + "_phase_space.png", dpi=150, bbox_inches="tight")
+        plt.show()
 
 
 @postprocess_app.command("wake-monitor")
@@ -2656,10 +2726,20 @@ def postprocess_wake_monitor(
     if plot:
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(wake, "b-", linewidth=1.5)
-        ax.set_xlabel("Time step")
-        ax.set_ylabel("Wake potential")
-        ax.set_title(f"WakeMonitor m{mode}_{index:06d}")
+        ax.plot(wake, "b-", linewidth=1.5, alpha=0.7, label=f"WakeM_{mode:02d}_{index:06d}")
+
+        # Overlay final wakeL if available (MATLAB WakeMonitor.m behavior)
+        try:
+            s, W, _, _, _, _ = loader.load_wake(mode=mode)
+            W_pc = W * 1e-3  # m·V/nC → V/pC
+            ax.plot(W_pc, "r-", linewidth=1.5, alpha=0.7, label=f"wakeL_{mode:02d} (final)")
+            ax.legend(loc="best")
+        except Exception:
+            pass  # wakeL not available, just show WakeMonitor
+
+        ax.set_xlabel("Time step / s-index")
+        ax.set_ylabel("Wake potential [V/pC]")
+        ax.set_title(f"WakeMonitor m{mode}_{index:06d} + final wakeL")
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
         if output:
@@ -4228,36 +4308,64 @@ def _generate_corrugated_geometry(
 
 
 
-def _plot_field_2d(
-    F: "np.ndarray",
-    Z: "np.ndarray | None" = None,
-    R: "np.ndarray | None" = None,
+def _plot_monitor_slice(
+    monitor_or_data: Any,
     *,
     title: str = "",
     output: str | None = None,
     no_show: bool = False,
+    time_step: int = 0,
 ) -> None:
-    """Plot a 2-D field monitor slice as pseudocolor.
+    """Plot a 2-D slice from a field monitor or raw numpy array.
+
+    For 3-D monitor data (kt, kz, kr), takes a slice at *time_step*.
+    For 2-D data, plots directly.
+    Falls back to line plot if dimensions don't match.
 
     Parameters
     ----------
-    F : np.ndarray
-        Field data (2-D: nz x nr).
-    Z : np.ndarray, optional
-        Longitudinal coordinate array.
-    R : np.ndarray, optional
-        Transverse coordinate array.
+    monitor_or_data : MonitorData or np.ndarray
+        MonitorData object (with F/Z/R attrs) or raw 2-D field array.
     title : str
         Plot title.
     output : str, optional
         Save plot to file.
     no_show : bool
         If True, do not display plot window.
+    time_step : int
+        Time slice index for 3-D data.
     """
     import matplotlib.pyplot as plt
 
-    if F.ndim != 2:
-        console.print("[yellow]Warning: Field is not 2-D; skipping plot.[/yellow]")
+    if hasattr(monitor_or_data, "F"):
+        # MonitorData object
+        F = monitor_or_data.F
+        Z = getattr(monitor_or_data, "Z", None)
+        R = getattr(monitor_or_data, "R", None)
+    else:
+        F = monitor_or_data
+        Z = None
+        R = None
+
+    # For 3-D data, take a time slice
+    if F.ndim == 3:
+        idx = min(time_step, F.shape[0] - 1)
+        F = F[idx, :, :]
+    elif F.ndim == 1:
+        # 1-D trace: simple line plot
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(F, linewidth=1.2)
+        ax.set_xlabel("Index")
+        ax.set_ylabel("Field")
+        ax.set_title(title or "Field Monitor")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        if output:
+            fig.savefig(output.replace(".txt", ".png"), dpi=150, bbox_inches="tight")
+        if not no_show:
+            plt.show()
+        else:
+            plt.close(fig)
         return
 
     n_rows, n_cols = F.shape
@@ -4266,32 +4374,7 @@ def _plot_field_2d(
     if R is None:
         R = np.arange(n_rows)
 
-    # Handle shape mismatch: try transpose, or fall back to line plot
-    if len(R) != n_rows or len(Z) != n_cols:
-        if len(R) == n_cols and len(Z) == n_rows:
-            F = F.T
-            n_rows, n_cols = F.shape
-        else:
-            console.print(
-                f"[yellow]Warning: Field shape ({n_rows},{n_cols}) "
-                f"incompatible with coord arrays "
-                f"(R={len(R)}, Z={len(Z)}); using line plot.[/yellow]"
-            )
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(Z * 1e3, F[0, :] if F.shape[0] < F.shape[1] else F[:, 0])
-            ax.set_xlabel("z [mm]")
-            ax.set_ylabel("Field")
-            ax.set_title(title or "Field Monitor")
-            ax.grid(True, alpha=0.3)
-            fig.tight_layout()
-            if output:
-                fig.savefig(output.replace(".txt", ".png"), dpi=150, bbox_inches="tight")
-            if not no_show:
-                plt.show()
-            else:
-                plt.close(fig)
-            return
-
+    # Standard 2-D pseudocolor
     fig, ax = plt.subplots(figsize=(10, 6))
     im = ax.pcolormesh(Z * 1e3, R * 1e3, F, shading="auto", cmap="RdBu_r")
     cbar = fig.colorbar(im, ax=ax)
@@ -4308,6 +4391,67 @@ def _plot_field_2d(
         plt.show()
     else:
         plt.close(fig)
+
+
+def _save_monitor_total(
+    out_path: Path,
+    F: "np.ndarray",
+    component: str,
+    time_type: str,
+    D: float,
+    T: "np.ndarray | None" = None,
+    Z: "np.ndarray | None" = None,
+    R: "np.ndarray | None" = None,
+) -> None:
+    """Save synthesised total field in ECHO2D MonitorTotal format.
+
+    Writes a header compatible with ``PP_FieldMonitor_rect.m`` /
+    ``PP_FieldMonitor_round.m`` and the data matrix.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # F is 2-D: (kt, kz*kr) after synthesis (flat array)
+    if F.ndim == 2:
+        kt = F.shape[0]
+        k_space = F.shape[1]
+    else:
+        kt = F.shape[0]
+        k_space = F.shape[1] * F.shape[2]
+
+    k_ct = kt
+    h_ct = (T[1] - T[0]) if T is not None and len(T) > 1 else 1.0
+    ct0 = float(T[0]) if T is not None else 0.0
+    kr = len(R) if R is not None else 1
+    hr = (R[1] - R[0]) if R is not None and len(R) > 1 else 1.0
+    r0 = float(R[0]) if R is not None else 0.0
+
+    lines = [
+        f"% Field={component} time={time_type}  width={D:.6e}",
+        f"% k_ct={k_ct} h_ct={h_ct:.6e} ct0={ct0:.6e}",
+        f"% k_r={kr} h_r={hr:.6e} r0={r0:.6e}",
+    ]
+    if time_type == "s":
+        kz = len(Z) if Z is not None else k_space // kr
+        hz = (Z[1] - Z[0]) if Z is not None and len(Z) > 1 else 1.0
+        z0 = float(Z[0]) if Z is not None else 0.0
+        lines.append(f"% k_z={kz} h_z={hz:.6e} z0={z0:.6e}")
+    else:
+        ks = len(Z) if Z is not None else k_space // kr
+        hs = abs(Z[1] - Z[0]) if Z is not None and len(Z) > 1 else 1.0
+        s0 = abs(float(Z[0])) if Z is not None else 0.0
+        lines.append(f"% k_s={ks} h_s={hs:.6e} s0={s0:.6e}")
+
+    # Write header + flattened data
+    header = "\n".join(lines) + "\n"
+    # Flatten F to 2-D if needed
+    F_flat = F.reshape(F.shape[0], -1) if F.ndim == 3 else F
+    # Prepend T column (ct for s-type, or use index for z-type)
+    if T is not None:
+        out = np.column_stack([T, F_flat])
+    else:
+        out = np.column_stack([np.arange(kt) * h_ct + ct0, F_flat])
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(header)
+        np.savetxt(f, out, fmt="%.6e")
 
 
 def _resolve_plot_data_dir(output_dir: str) -> Path:
