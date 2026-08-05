@@ -38,3 +38,4 @@ coverage.xml
 
 # Misc
 *.db
+tests/comprehensive_test/output/
