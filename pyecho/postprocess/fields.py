@@ -562,6 +562,70 @@ def save_point_monitor(
 # Animation (replicates MATLAB mesh + pause loop)
 # ---------------------------------------------------------------------------
 
+def _plot_field_2d(
+    ax: "plt.Axes",
+    Z: np.ndarray,
+    R: np.ndarray,
+    F_slice: np.ndarray,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    n_contours: int = 15,
+) -> "plt.Axes":
+    """Plot a 2-D field slice with smooth interpolation + contour overlay.
+
+    Uses ``pcolormesh`` with gouraud shading for smooth rendering and
+    overlays contour lines to show field structure clearly.  This
+    replicates the visual clarity of MATLAB's ``mesh``/``contourf``.
+
+    Parameters
+    ----------
+    ax : plt.Axes
+        Matplotlib axes to draw on.
+    Z : np.ndarray
+        1-D longitudinal coordinate array [mm].
+    R : np.ndarray
+        1-D transverse coordinate array [mm].
+    F_slice : np.ndarray
+        2-D field data with shape ``(nz, nr)`` (will be transposed if
+        needed to match ``(len(R), len(Z))`` for pcolormesh).
+    vmin, vmax : float, optional
+        Color scale limits.  If None, use data min/max.
+    n_contours : int
+        Number of contour levels to overlay.
+
+    Returns
+    -------
+    plt.Axes
+    """
+    # Transpose: pcolormesh expects (nr, nz) for 1-D X=z, Y=r
+    if F_slice.shape == (len(Z), len(R)):
+        F_plot = F_slice.T
+    elif F_slice.shape == (len(R), len(Z)):
+        F_plot = F_slice
+    else:
+        F_plot = F_slice.T
+
+    # Gouraud shading for smooth interpolation between grid points
+    Z_mm = Z * 1e3
+    R_mm = R * 1e3
+
+    if vmin is None:
+        vmin = float(np.min(F_plot))
+    if vmax is None:
+        vmax = float(np.max(F_plot))
+
+    im = ax.pcolormesh(Z_mm, R_mm, F_plot,
+                       shading="gouraud", cmap="RdBu_r",
+                       vmin=vmin, vmax=vmax)
+
+    # Contour overlay for clear field structure
+    levels = np.linspace(vmin, vmax, n_contours)
+    ax.contour(Z_mm, R_mm, F_plot, levels=levels,
+               colors="black", linewidths=0.4, alpha=0.5)
+
+    return ax
+
+
 def animate_field_monitor(
     monitor: MonitorData,
     output: str | None = None,
@@ -610,10 +674,8 @@ def animate_field_monitor(
     z_label = "z [mm]" if monitor.time_type == "s" else "s [mm]"
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    # pcolormesh: X=z(len=nz), Y=r(len=nr), C needs (nr, nz)
-    im = ax.pcolormesh(Z * 1e3, R * 1e3, F[0, :, :].T,
-                       shading="nearest", cmap="RdBu_r", vmin=vmin, vmax=vmax)
-    fig.colorbar(im, ax=ax, label=f"{comp}")
+    _plot_field_2d(ax, Z, R, F[0, :, :], vmin=vmin, vmax=vmax)
+    fig.colorbar(ax.collections[0], ax=ax, label=f"{comp}")
     ax.set_xlabel(z_label)
     ax.set_ylabel(r_label)
     title = ax.set_title("")
@@ -621,17 +683,15 @@ def animate_field_monitor(
     def update(idx):
         frame = frames[idx]
         ax.clear()
-        im2 = ax.pcolormesh(Z * 1e3, R * 1e3, F[frame, :, :].T,
-                            shading="nearest", cmap="RdBu_r", vmin=vmin, vmax=vmax)
+        _plot_field_2d(ax, Z, R, F[frame, :, :], vmin=vmin, vmax=vmax)
         pos = mesh_pos[frame] if monitor.time_type == "z" else 0.0
-        title = ax.set_title(
+        ax.set_title(
             f"{comp} — frame {frame}/{nt}, "
             f"ct={monitor.T[frame]*1e3:.1f}mm, "
             f"z_pos={pos*1e3:.1f}mm"
         )
         ax.set_xlabel(z_label)
         ax.set_ylabel(r_label)
-        return [im2, title]
 
     ani = FuncAnimation(fig, update, frames=n_frames, interval=1000//fps, blit=False)
 
@@ -677,17 +737,26 @@ def plot_field_3d(
         raise ValueError(f"3-D surface requires 3-D monitor, got shape {F.shape}")
 
     idx = min(time_step, F.shape[0] - 1)
-    F_slice = F[idx, :, :]
-    Z, R = np.meshgrid(monitor.Z * 1e3, monitor.R * 1e3, indexing="ij")
+    # Transpose for surface plot: (nr, nz) order
+    F_plot = F[idx, :, :].T
+    Z_mm = monitor.Z * 1e3
+    R_mm = monitor.R * 1e3
+    Zg, Rg = np.meshgrid(Z_mm, R_mm, indexing="xy")
 
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection="3d")
-    surf = ax.plot_surface(Z, R, F_slice, cmap="RdBu_r", linewidth=0, antialiased=True)
+    surf = ax.plot_surface(Zg, Rg, F_plot, cmap="RdBu_r",
+                           linewidth=0, antialiased=True,
+                           rstride=1, cstride=1, alpha=0.9)
+    # Add contour projection on the bottom
+    ax.contour(Zg, Rg, F_plot, zdir='z', offset=F_plot.min(),
+               levels=15, cmap='RdBu_r', alpha=0.3, linewidths=0.5)
     fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label=monitor.field_component)
     ax.set_xlabel("z [mm]" if monitor.time_type == "s" else "s [mm]")
     r_label = "r [mm]" if geometry == "round" else "y [mm]"
     ax.set_ylabel(r_label)
     ax.set_zlabel(monitor.field_component)
+    ax.view_init(elev=25, azim=-60)
     ax.set_title(f"{monitor.field_component} — t={monitor.T[idx]*1e3:.1f}mm")
     fig.tight_layout()
 

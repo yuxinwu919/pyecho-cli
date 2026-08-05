@@ -456,21 +456,21 @@ def plot_field(
     if F.ndim == 3:
         field_slice = F[time_step, :, :]
     elif F.ndim == 2:
-        # Could be either (t, z) or (z, r)
         field_slice = F
     else:
         field_slice = F
 
-    Z, R = np.meshgrid(monitor.Z * 1e3, monitor.R * 1e3, indexing="xy")
+    Z_1d = monitor.Z
+    R_1d = monitor.R
 
-    if field_slice.shape == Z.shape:
-        im = ax.pcolormesh(Z, R, field_slice, shading="auto", cmap="RdBu_r")
+    # Use gouraud-shaded pcolormesh with contour overlay for smooth rendering
+    # pcolormesh: X=z (nz,), Y=r (nr,), C needs (nr, nz)
+    if field_slice.shape == (len(Z_1d), len(R_1d)):
+        F_plot = field_slice.T
+    elif field_slice.shape == (len(R_1d), len(Z_1d)):
+        F_plot = field_slice
     else:
-        # Try transposed
-        if field_slice.T.shape == Z.shape:
-            im = ax.pcolormesh(Z, R, field_slice.T, shading="auto", cmap="RdBu_r")
-        else:
-            # Fallback: line plot along z
+        # Fallback: line plot along z
             ax.plot(monitor.Z * 1e3, field_slice[0, :] if field_slice.ndim == 2 else field_slice)
             ax.set_ylabel(f"{monitor.field_component}")
             ax.set_xlabel("z [mm]")
@@ -481,11 +481,21 @@ def plot_field(
             fig.tight_layout()
             return fig, ax
 
+    Z_mm = Z_1d * 1e3
+    R_mm = R_1d * 1e3
+    vmin, vmax = float(np.min(F_plot)), float(np.max(F_plot))
+
+    im = ax.pcolormesh(Z_mm, R_mm, F_plot,
+                       shading="gouraud", cmap="RdBu_r",
+                       vmin=vmin, vmax=vmax)
+    levels = np.linspace(vmin, vmax, 15)
+    ax.contour(Z_mm, R_mm, F_plot, levels=levels,
+               colors="black", linewidths=0.4, alpha=0.5)
+
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label(monitor.field_component)
-
-    ax.set_xlabel("z [mm]")
-    ax.set_ylabel("r [mm]")
+    ax.set_xlabel("z [mm]" if monitor.time_type == "s" else "s [mm]")
+    ax.set_ylabel("r/mm")
     ax.set_title(
         f"{monitor.field_component} — t = {monitor.T[time_step]:.3e} s"
     )

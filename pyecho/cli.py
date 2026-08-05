@@ -4516,11 +4516,11 @@ def _plot_monitor_slice(
     if R is None:
         R = np.arange(n_rows)
 
-    # Standard 2-D pseudocolor
+    # Smooth 2-D pseudocolor with contour overlay
+    from pyecho.postprocess.fields import _plot_field_2d
     fig, ax = plt.subplots(figsize=(10, 6))
-    im = ax.pcolormesh(Z * 1e3, R * 1e3, F, shading="auto", cmap="RdBu_r")
-    cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("Field")
+    _plot_field_2d(ax, Z, R, F)
+    fig.colorbar(ax.collections[0], ax=ax, label="Field")
     ax.set_xlabel("z [mm]")
     ax.set_ylabel("r/y [mm]")
     ax.set_title(title or "Field Monitor")
