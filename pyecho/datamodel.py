@@ -54,18 +54,19 @@ class WakeResult:
 
 @dataclass
 class FlatWakeResult:
-    """Complete wake result for flat (rectangular) geometry.
+    """Complete wake result for recta (rectangular) geometry.
+
+    In a rectangular structure of constant width, the longitudinal
+    wake is decomposed into monopole (Wlong), quadrupole (Wquad), and
+    dipole (Wdipole) components.  Optionally the full Wcc / Wss
+    coupling matrices may be stored.
 
     .. note::
 
-       ECHO uses ``GeometryType=recta`` in input files, while this
-       codebase uses ``flat`` for historical reasons.  The two terms
-       are interchangeable: flat geometry ≡ rectangular (recta).
-
-    In a rectangular structure of constant width, the longitudinal
-    wake is decomposed into monopole, quadrupole, and dipole
-    components.  Optionally the full Wcc / Wss coupling matrices
-    may be stored.
+       This class uses the term ``"recta"`` to match ECHO2D's
+       ``GeometryType=recta`` convention.  The CLI may display
+       ``"rectangular"`` or ``"flat"`` as user-friendly aliases,
+       but internally the geometry type is always ``"recta"``.
 
     Attributes
     ----------
@@ -102,12 +103,18 @@ class FlatWakeResult:
 
 @dataclass
 class RoundWakeResult:
-    """Complete wake result for round (axisymmetric) geometry.
+    """Complete wake result for round (rotationally symmetric) geometry.
 
     In a rotationally symmetric structure, the wake is decomposed
     into independent azimuthal modes.  m=0 (monopole) gives the
     longitudinal wake potential; m=1 (dipole) gives the dipole
     modal coefficient and transverse kick.
+
+    .. note::
+
+       Uses ECHO2D's ``GeometryType=round`` convention.  The effective
+       transverse step follows :math:`dy = (\\mathrm{offset} + 0.5)\\cdot h_r`
+       (the +0.5 shift is essential for correctness; see ECHO manual §4.3.2).
 
     Attributes
     ----------
@@ -310,6 +317,10 @@ class SimulationResult:
     currents_r: np.ndarray | None = None
     particles: np.ndarray | None = None
     monitors: list[MonitorData] = field(default_factory=list)
+    wake_monitors: dict = field(default_factory=dict)
+    """WakeMonitor binary data: {(mode, index): {n, wake, mode, index}}."""
+    beam_moments: np.ndarray | None = None
+    """Beam moments monitor data (time × moments array)."""
     metadata: RunMetadata = field(default_factory=RunMetadata)
     stdout: str = ""
     stderr: str = ""

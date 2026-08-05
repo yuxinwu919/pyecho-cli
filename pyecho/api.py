@@ -172,10 +172,11 @@ def quick_postprocess(
 
     if geo_type in ("round",):
         return _postprocess_round(loader, **kwargs)
-    elif geo_type in ("flat", "magn", "elec", "recta"):
+    elif geo_type in ("recta", "flat", "magn", "elec"):
+        # Accept "flat" as legacy alias for backward compatibility
         return _postprocess_flat(loader, **kwargs)
     else:
-        # Try round first
+        # Try round first, then recta
         try:
             return _postprocess_round(loader, **kwargs)
         except Exception:

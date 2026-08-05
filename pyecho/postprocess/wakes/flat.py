@@ -1,7 +1,15 @@
-"""Flat (rectangular) geometry wake post-processing.
+"""Recta (rectangular) geometry wake post-processing.
 
-Replicates the full MATLAB pipeline for flat-geometry wake computations
-used in ECHO2D examples with rectangular structures (dechirpers, etc.).
+Replicates the full MATLAB pipeline for recta-geometry wake computations
+used in ECHO2D examples with rectangular structures (dechirpers, absorbers,
+tapered collimators, etc.).
+
+.. note::
+
+   This module uses ``"recta"`` to match ECHO2D's ``GeometryType=recta``
+   convention.  The CLI may display ``"flat"`` or ``"rectangular"`` as
+   user-friendly aliases, but the internal geometry type string is always
+   ``"recta"``.
 
 Pipeline overview
 ------------------
@@ -23,19 +31,19 @@ Key MATLAB → Python equivalences
 * ``LossShape.m`` → :func:`pyecho.mathlib.loss.loss_shape`
 
 **Critical convention (different from round geometry!)**
-    In flat geometry the effective transverse step is::
+    In recta geometry the effective transverse step is::
 
         dy = offset * hr         (NO +0.5!)
 
     This is fundamentally different from the round-geometry convention
     ``dy = (offset + 0.5) * hr``.
 
-Unit conversions (flat geometry)
----------------------------------
+Unit conversions (recta geometry)
+----------------------------------
 .. note::
    The variable ``D`` denotes the **total width** of the rectangular
    structure, i.e. the ``Width`` parameter in ``input_in.txt``.
-   $k_x = \\pi m / D$.  This is only meaningful for ``GeometryType=recta``;
+   :math:`k_x = \\pi m / D`.  This is only meaningful for ``GeometryType=recta``;
    for round geometry the radius is defined by the geometry file itself.
 
 * Raw ``wakeL_XX.txt``: m·V/nC → V/pC via ×1e-3

@@ -113,12 +113,12 @@ class PostProcessor:
         has_elec = elec_dir is not None
 
         if has_magn or has_elec:
-            self._effective_type = "flat"
+            self._effective_type = "recta"
         elif gt in ("round",):
             self._effective_type = "round"
         elif gt in ("magn", "elec"):
-            # Loader found magn/elec subdirectory directly; treat as flat
-            self._effective_type = "flat"
+            # Loader found magn/elec subdirectory directly; treat as recta
+            self._effective_type = "recta"
         else:
             # Try to infer from wakeL file presence
             data_dir = self.loader._resolve_data_dir()
@@ -127,7 +127,7 @@ class PostProcessor:
             elif list(data_dir.glob("wakeL_01.txt")):
                 # Could be either; check if Wcc exists or magn/elec dirs nearby
                 if list(data_dir.glob("Wcc_odd.txt")) or has_magn or has_elec:
-                    self._effective_type = "flat"
+                    self._effective_type = "recta"
                 else:
                     self._effective_type = "round"
             else:
@@ -228,7 +228,7 @@ class PostProcessor:
         n_modes_cc: int = 0,
         n_modes_ss: int = 0,
     ) -> dict:
-        """Process flat geometry wakes (Wlong, Wquad, Wdipole).
+        """Process recta geometry wakes (Wlong, Wquad, Wdipole).
 
         Auto-detects the magn/ and elec/ subdirectories and the number
         of available odd modes.
@@ -253,9 +253,9 @@ class PostProcessor:
         PostProcessError
             If no flat geometry data is found.
         """
-        if self._effective_type not in ("flat",):
+        if self._effective_type not in ("recta",):
             raise PostProcessError(
-                f"process_flat_wake requires flat geometry, "
+                f"process_flat_wake requires recta geometry, "
                 f"but detected type is '{self._effective_type}'."
             )
 
@@ -291,7 +291,7 @@ class PostProcessor:
         if magn_dir is None and elec_dir is None:
             raise PostProcessError(
                 "No magn/ or elec/ directory found. "
-                "Flat geometry requires at least one symmetry condition output."
+                "Recta geometry requires at least one symmetry condition output."
             )
 
         # --- Auto-detect n_modes -----------------------------------------------
@@ -665,9 +665,9 @@ class PostProcessor:
                 logger.warning("Dipole processing failed: %s", exc)
                 results["dipole"] = None
 
-        elif self._effective_type == "flat":
-            logger.info("Running full flat-geometry post-processing...")
-            results["flat_wake"] = self.process_flat_wake()
+        elif self._effective_type == "recta":
+            logger.info("Running full recta-geometry post-processing...")
+            results["recta_wake"] = self.process_flat_wake()
 
             # Try field synthesis if monitors exist
             monitors = self.loader.list_monitors()

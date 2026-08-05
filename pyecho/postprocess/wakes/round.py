@@ -147,7 +147,7 @@ def process_wake_monopole(
         loss_factor=loss,
         rms_spread=spread,
         peak=peak,
-        label="monopole",
+        label="m=0 monopole",
         units="V/pC",
     )
 
@@ -239,7 +239,7 @@ def process_wake_dipole(
         loss_factor=loss,
         rms_spread=spread,
         peak=float(np.max(np.abs(W_long))),
-        label="dipole",
+        label="m=1 dipole",
         units="V/pC/m²",
     )
     result_trans = WakeResult(

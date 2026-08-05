@@ -474,7 +474,7 @@ class ECHO2DParams(BaseModel):
     #: Registry of built-in templates.
     _TEMPLATES: ClassVar[dict[str, dict[str, Any]]] = {
         "round_collimator": {
-            "GeometryFile": "collimator.txt",
+            "GeometryFile": "round_collimator.txt",
             "Units": "cm",
             "GeometryType": "round",
             "Width": 0.0,
@@ -507,7 +507,7 @@ class ECHO2DParams(BaseModel):
             "DumpMesh": False,
         },
         "flat_absorber": {
-            "GeometryFile": "photon_absorber_cm.txt",
+            "GeometryFile": "flat_absorber.txt",
             "Units": "cm",
             "GeometryType": "recta",
             "Width": 0.07,
@@ -540,7 +540,7 @@ class ECHO2DParams(BaseModel):
             "DumpMesh": False,
         },
         "tesla_cavity": {
-            "GeometryFile": "tesla9.txt",
+            "GeometryFile": "tesla_cavity.txt",
             "Units": "cm",
             "GeometryType": "round",
             "Width": 0.0,

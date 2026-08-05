@@ -584,12 +584,18 @@ class ECHO2DRunner:
         # Load particles
         particles = loader.load_particles()
 
-        # Load monitors
+        # Load field monitors
         monitors = []
         for m, n in loader.list_monitors():
             mon = loader.load_monitor(mode=m, monitor_id=n)
             if mon is not None:
                 monitors.append(mon)
+
+        # Load WakeMonitor binary files
+        wake_monitors = loader.load_all_wake_monitors()
+
+        # Load BeamMoments
+        beam_moments = loader.load_beam_moments()
 
         # Build metadata
         metadata = RunMetadata(
@@ -615,6 +621,8 @@ class ECHO2DRunner:
             currents_r=currents_r,
             particles=particles,
             monitors=monitors,
+            wake_monitors=wake_monitors,
+            beam_moments=beam_moments,
             metadata=metadata,
             stdout=stdout,
             stderr=stderr,

@@ -116,8 +116,7 @@ _EXAMPLES: dict[str, dict] = {
         "description": (
             "Flat photon absorber (N4/N5). "
             "Rectangular step-in/step-out structure. "
-            "Default = magn symmetry (longitudinal + quadrupole); "
-            "use --symmetry elec for dipole wake."
+            "Runs both magn + elec symmetries automatically."
         ),
         "geometry": "flat_absorber.txt",
         "params": {
@@ -126,7 +125,7 @@ _EXAMPLES: dict[str, dict] = {
             "width": 0.07,
             "symmetry": "magn",
             "bunch_sigma": 0.004,
-            "offset": -1,
+            "offset": 0,
             "modes": "1 3 5 7 9 11 13 15",
             "mesh_length": 104,
             "step_y": 0.0008,
@@ -177,76 +176,6 @@ _EXAMPLES: dict[str, dict] = {
         },
     },
 }
-
-
-def _generate_input_in(
-    out_path: Path,
-    geometry_file: str,
-    *,
-    units: str = "cm",
-    geometry_type: str = "round",
-    width: float = 0.0,
-    symmetry: str = "magn",
-    bunch_sigma: float = 0.001,
-    offset: int = -1,
-    modes: str = "0",
-    mesh_length: int = 52,
-    step_y: float = 0.0002,
-    step_z: float = 0.0002,
-    adjust_mesh: int = 1,
-    wake_method: str = "ind",
-) -> None:
-    """Generate an ECHO2D ``input_in.txt`` file."""
-    content = f"""%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
-
-GeometryFile={geometry_file}\t% geometry file, '-' for Gaussian beam
-Units={units}\t% m / cm / mm
-GeometryType={geometry_type}\t % recta / round
-Width={width}\t% pipe half-width [m], 0 for round
-SymmetryCondition={symmetry}\t % magn / elec
-Convex=1\t% 1=convex
-
-%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%
-
-InPartFile=-\t% input particle file, '-' for none
-BunchSigma={bunch_sigma}\t% RMS bunch length [m]
-Offset={offset}\t% beam offset in mesh lines, -1=on-axis
-InjectionTimeStep=0\t% time step to inject beam
-
-%%%%%%%%%%%%%%  field %%%%%%%%%%%%%%%%%%%%%%
-
-InFieldDir=-\t% input field directory, '-' for none
-PortDir=-\t% port directory, '-' for none
-PortPosition=-1\t% port position, -1=auto
-
-%%%%%%%%%%%%%% model %%%%%%%%%%%%%%%%%%%%%%%
-
-WakeIntMethod={wake_method}\t% ind=indirect, dir=direct
-Modes={modes} \t% azimuthal mode numbers
-ParticleMotion=0\t% 1=track particles
-ParticleField=1\t% 1=compute particle field
-CurrentFilter=0\t% current filter flag
-ParticleLoss=0\t% 1=compute particle loss
-
-%%%%%%%%%%%%%% mesh %%%%%%%%%%%%%%%%%%%%%%%
-
-MeshLength={mesh_length}\t% moving mesh length [grid lines]
-StartPosition=0\t% mesh start position [grid lines]
-TimeSteps=-1\t% number of time steps, -1=auto
-StepY={step_y}\t% transverse mesh step [m]
-StepZ={step_z}\t% longitudinal mesh step [m]
-NStepsInConductive=0\t% steps inside conductive wall
-AdjustMesh={adjust_mesh}\t% 1=auto-adjust mesh
-MeshMotionFile=-\t% mesh motion file, '-' for v=c
-
-%%%%%%%%%%%%%% monitors %%%%%%%%%%%%%%%%%%%%%%%
-
-DumpField=0\t% 1=dump EM field to disk
-DumpParticles=0\t% 1=dump particle data
-DumpCurrent=0\t% 1=dump current profile
-DumpMesh=0\t% 1=dump mesh geometry
-"""
-    out_path.write_text(content, encoding="utf-8")
 
 
 def _print_example_summary(
@@ -493,21 +422,22 @@ def example_cmd(
 
         # Step 3: generate input_in.txt
         task = progress.add_task("Generating input_in.txt...", total=None)
-        _generate_input_in(
-            run_dir / "input_in.txt",
-            ex["geometry"],
-            units=p["units"],
-            geometry_type=p["geometry_type"],
-            width=p["width"],
-            symmetry=p["symmetry"],
-            bunch_sigma=p["bunch_sigma"],
-            offset=p["offset"],
-            modes=p["modes"],
-            mesh_length=p["mesh_length"],
-            step_y=p["step_y"],
-            step_z=p["step_z"],
-            adjust_mesh=p["adjust_mesh"],
+        from pyecho.config import ECHO2DParams, save_params
+        params = ECHO2DParams(
+            GeometryFile=ex["geometry"],
+            Units=p["units"],
+            GeometryType=p["geometry_type"],
+            Width=p["width"],
+            SymmetryCondition=p["symmetry"],
+            BunchSigma=p["bunch_sigma"],
+            Offset=p["offset"],
+            Modes=p["modes"],
+            MeshLength=p["mesh_length"],
+            StepY=p["step_y"],
+            StepZ=p["step_z"],
+            AdjustMesh=bool(p["adjust_mesh"]),
         )
+        save_params(params, run_dir / "input_in.txt")
         progress.update(
             task, completed=True,
             description="[green]✓[/green] input_in.txt generated"
@@ -526,44 +456,65 @@ def example_cmd(
             )
             return
 
-        # Step 4: run ECHO2D
-        task = progress.add_task(
-            f"Running ECHO2D solver ({threads} threads)...",
-            total=None,
-        )
+        # Step 4: run ECHO2D (once per symmetry)
         from pyecho.runner import ECHO2DRunner
+        from pyecho.project import update_run_status as _upd
 
         runner = ECHO2DRunner(work_dir=str(run_dir))
-        try:
-            result = runner.run(
-                np=threads,
-                show_progress=False,
+        total_elapsed = 0.0
+        all_ok = True
+        for sr in sub_runs:
+            sym = sr.symmetry
+            task = progress.add_task(
+                f"Running ECHO2D ({sym})...",
+                total=None,
             )
-            elapsed = result.metadata.elapsed_seconds
-            # Update run status
-            from pyecho.project import update_run_status as _upd
-            for sr in sub_runs:
-                _upd(run_dir, sr.symmetry, "completed", elapsed)
-            progress.update(
-                task, completed=True,
-                description=(
-                    f"[green]✓[/green] Simulation complete "
-                    f"([dim]{elapsed:.1f}s[/dim])"
-                ),
+            # Update SymmetryCondition in input_in.txt
+            input_file = run_dir / "input_in.txt"
+            original = input_file.read_text(encoding="utf-8")
+            updated = re.sub(
+                r"SymmetryCondition=\w+",
+                f"SymmetryCondition={sym}",
+                original,
             )
-        except Exception as exc:
-            progress.update(
-                task, completed=True,
-                description=f"[red]✗[/red] Simulation failed: {exc}",
-            )
-            console.print(f"[red]Error: {exc}[/red]")
+            input_file.write_text(updated, encoding="utf-8")
+
+            try:
+                sim_result = runner.run(np=threads, show_progress=False)
+                t_elapsed = sim_result.metadata.elapsed_seconds
+                total_elapsed += t_elapsed
+
+                # Move output files to symmetry subdirectory
+                out_subdir = run_dir / sr.output_dir.strip("/")
+                out_subdir.mkdir(parents=True, exist_ok=True)
+                _collect_output(runner.work_dir, out_subdir, sym)
+
+                _upd(run_dir, sym, "completed", t_elapsed)
+                progress.update(
+                    task, completed=True,
+                    description=f"[green]✓[/green] {sym} done ([dim]{t_elapsed:.1f}s[/dim])",
+                )
+            except Exception as exc:
+                _upd(run_dir, sym, "failed", 0)
+                progress.update(
+                    task, completed=True,
+                    description=f"[red]✗[/red] {sym} failed: {exc}",
+                )
+                console.print(f"  [red]Error ({sym}): {exc}[/red]")
+                all_ok = False
+                break
+            finally:
+                # Restore original input_in.txt
+                input_file.write_text(original, encoding="utf-8")
+
+        if not all_ok:
             raise typer.Exit(1)
 
         # Step 5: postprocess
         task = progress.add_task("Postprocessing wake data...", total=None)
         try:
             from pyecho.api import quick_postprocess
-            from pyecho.datamodel import FlatWakeResult, WakeResult
+            from pyecho.datamodel import FlatWakeResult, RoundWakeResult
 
             result = quick_postprocess(str(run_dir), geometry=p["geometry_type"])
             progress.update(
@@ -573,8 +524,10 @@ def example_cmd(
         except Exception as exc:
             progress.update(
                 task, completed=True,
-                description=f"[yellow]⚠[/yellow] Postprocess warning: {exc}",
+                description="[yellow]⚠[/yellow] Postprocess warning",
             )
+            # Print the full warning outside the progress bar to avoid truncation
+            console.print(f"  [yellow]⚠ Warning:[/yellow] {exc}")
             result = None
 
     # ── Summary ──
@@ -2238,7 +2191,7 @@ def postprocess_wake(
             )
         )
         # Save monopole (m=0) — longitudinal wake
-        _save_wake_round_data(result.s, result.Wlong, "monopole", "V/pC", wake_out / "Wlong.txt")
+        _save_wake_round_data(result.s, result.Wlong, "monopole", "V/pC", wake_out / "wake_monopole.txt")
         summary_lines = [
             f"Geometry: round",
             f"",
@@ -2249,7 +2202,7 @@ def postprocess_wake(
         ]
         # Save dipole (m=1) if available
         if result.Wdipole is not None:
-            _save_wake_round_data(result.s, result.Wdipole, "dipole", "V/pC/m²", wake_out / "Wdipole.txt")
+            _save_wake_round_data(result.s, result.Wdipole, "dipole", "V/pC/m²", wake_out / "wake_dipole.txt")
             kd = result.kick_dipole if result.kick_dipole is not None else 0.0
             summary_lines.extend([
                 "",
@@ -2309,40 +2262,664 @@ def postprocess_wake(
             plt.show()
 
 
+@postprocess_app.command("field")
+def postprocess_field(
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    list_monitors: Annotated[
+        bool,
+        typer.Option("--list", "-l", help="List available field monitors"),
+    ] = False,
+    mode: Annotated[
+        int,
+        typer.Option("--mode", "-m", help="Azimuthal mode number"),
+    ] = 0,
+    monitor_id: Annotated[
+        int,
+        typer.Option("--monitor-id", "-n", help="Monitor index (N in Monitor_mXX_NYY.txt)"),
+    ] = 1,
+    component: Annotated[
+        Optional[str],
+        typer.Option("--component", "-c", help="Field component: Ex, Ey, Ez, Hx, Hy, Hz"),
+    ] = None,
+    point_t: Annotated[
+        Optional[float],
+        typer.Option("--point-t", help="Fixed time/s coordinate for extraction"),
+    ] = None,
+    point_z: Annotated[
+        Optional[float],
+        typer.Option("--point-z", help="Fixed z coordinate for extraction"),
+    ] = None,
+    point_r: Annotated[
+        Optional[float],
+        typer.Option("--point-r", help="Fixed r/y coordinate for extraction"),
+    ] = None,
+    synthesize: Annotated[
+        bool,
+        typer.Option("--synthesize", help="Synthesize total field from modal monitors"),
+    ] = False,
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="Output file for extracted data"),
+    ] = None,
+    plot: Annotated[
+        bool,
+        typer.Option("--plot", "-p", help="Plot the field"),
+    ] = False,
+    no_show: Annotated[
+        bool,
+        typer.Option("--no-show", help="Do not display plot window"),
+    ] = False,
+) -> None:
+    """Post-process field monitor data.
+
+    Loads ECHO2D field monitor files (Monitor_mXX_NYY.txt) and extracts
+    field components at specific points, or synthesizes the total field
+    from modal components for flat geometry.
+
+    \\b
+    Examples:
+      echo2d postprocess field . --list                 # list monitors
+      echo2d postprocess field . -m 1 -n 1 -c Ez        # load mode 1, monitor 1, Ez
+      echo2d postprocess field . -m 0 -n 1 --point-z 0.05 --point-r 0.01 --plot
+      echo2d postprocess field . --synthesize -c Ez -o total_field.txt
+    """
+    from pathlib import Path as _Path
+    from pyecho.project import resolve_run_dir
+    from pyecho.parser import OutputLoader
+    import numpy as np
+
+    # Resolve run ID to directory
+    resolved = resolve_run_dir(output_dir)
+    if resolved is not None:
+        output_dir = str(resolved)
+        console.print(f"  [dim]Run directory: {output_dir}[/dim]")
+
+    out_path = _Path(output_dir).resolve()
+    loader = OutputLoader(out_path)
+
+    # --list: show available monitors
+    if list_monitors:
+        monitors = loader.list_monitors()
+        if not monitors:
+            console.print("[yellow]No field monitors found.[/yellow]")
+            return
+        table = Table(title="Available Field Monitors")
+        table.add_column("Mode", style="cyan")
+        table.add_column("Monitor ID", style="green")
+        table.add_column("Filename")
+        for m, n in sorted(monitors):
+            table.add_row(str(m), str(n), f"Monitor_m{m}_N{n}.txt")
+        console.print(table)
+        return
+
+    # --synthesize: build total field from modal monitors
+    if synthesize:
+        if component is None:
+            console.print("[red]Error: --component is required for field synthesis.[/red]")
+            raise typer.Exit(1)
+        try:
+            total = synthesize_total_field_from_loader(
+                magn_dir=loader._resolve_data_dir(),
+                component=component,
+                monitor_id=monitor_id,
+                n_modes=mode if mode > 0 else 15,
+            )
+        except Exception as exc:
+            console.print(f"[red]Error: Field synthesis failed: {exc}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"[green]✓ Total field synthesized: {component}, shape={total.shape}[/green]")
+
+        if output:
+            np.savetxt(output, total, header=f"Total {component} field", fmt="%.8e")
+            console.print(f"  [dim]Saved to {output}[/dim]")
+
+        if plot:
+            _plot_field_2d(total, title=f"Total {component} field", output=output, no_show=no_show)
+        return
+
+    # --load single monitor
+    try:
+        monitor = loader.load_monitor(mode=mode, monitor_id=monitor_id)
+    except Exception as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1)
+
+    if monitor is None:
+        console.print(
+            f"[yellow]Monitor m{mode}_N{monitor_id} not found.[/yellow]\n"
+            f"Use --list to see available monitors."
+        )
+        return
+
+    # Show monitor info
+    console.print(
+        Panel.fit(
+            f"[bold]Monitor m{mode}_N{monitor_id}[/bold]\n"
+            f"  Component:  [cyan]{monitor.field_component}[/cyan]\n"
+            f"  Time type:  [cyan]{monitor.time_type}[/cyan]\n"
+            f"  T range:    [{monitor.T[0]:.3e}, {monitor.T[-1]:.3e}] ({len(monitor.T)} pts)\n"
+            f"  Z range:    [{monitor.Z[0]:.3e}, {monitor.Z[-1]:.3e}] ({len(monitor.Z)} pts)\n"
+            f"  R range:    [{monitor.R[0]:.3e}, {monitor.R[-1]:.3e}] ({len(monitor.R)} pts)\n"
+            f"  Field shape: {monitor.F.shape}",
+            title="Field Monitor Info",
+        )
+    )
+
+    # Extract field at specified point
+    if point_t is not None or point_z is not None or point_r is not None:
+        result = process_field_monitor(
+            monitor,
+            point_t=point_t,
+            point_z=point_z,
+            point_r=point_r,
+        )
+        field_data = result["field"]
+        console.print(
+            f"[green]✓ Field extracted: "
+            f"min={np.min(field_data):.4e}, max={np.max(field_data):.4e}[/green]"
+        )
+        if output:
+            # Save extracted trace
+            coords = result["coords"]
+            if coords:
+                data = np.column_stack([coords[0], field_data])
+                np.savetxt(output, data, header="coord  field", fmt="%.8e")
+            else:
+                np.savetxt(output, field_data.reshape(1, -1), fmt="%.8e")
+            console.print(f"  [dim]Saved to {output}[/dim]")
+
+    # Plot
+    if plot:
+        _plot_field_2d(
+            monitor.F, monitor.Z, monitor.R,
+            title=f"{monitor.field_component} — m{mode}_N{monitor_id}",
+            output=output, no_show=no_show,
+        )
+
+
+@postprocess_app.command("particles")
+def postprocess_particles(
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    to_astra: Annotated[
+        Optional[str],
+        typer.Option("--to-astra", help="Convert particles to ASTRA format, specify output file"),
+    ] = None,
+    total_charge: Annotated[
+        Optional[float],
+        typer.Option("--charge", "-q", help="Total bunch charge [C] for ASTRA conversion"),
+    ] = None,
+    energy: Annotated[
+        float,
+        typer.Option("--energy", "-e", help="Reference beam energy [MeV] for ASTRA"),
+    ] = 100.0,
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="Output file for particle statistics"),
+    ] = None,
+) -> None:
+    """Post-process particle tracking data.
+
+    Loads ``particles.out`` from ECHO2D output and displays phase-space
+    statistics.  Optionally converts to ASTRA format for further tracking.
+
+    \\b
+    Examples:
+      echo2d postprocess particles .                 # show statistics
+      echo2d postprocess particles . --to-astra out.astra -q 1e-9
+    """
+    from pathlib import Path as _Path
+    from pyecho.project import resolve_run_dir
+    from pyecho.parser import OutputLoader
+    from pyecho.postprocess.particles import (
+        load_echo_particles, compute_particle_statistics, convert_echo_to_astra,
+    )
+
+    resolved = resolve_run_dir(output_dir)
+    if resolved is not None:
+        output_dir = str(resolved)
+        console.print(f"  [dim]Run directory: {output_dir}[/dim]")
+
+    out_path = _Path(output_dir).resolve()
+    loader = OutputLoader(out_path)
+    data_dir = loader._resolve_data_dir()
+    part_file = data_dir / "particles.out"
+
+    if not part_file.exists():
+        console.print(f"[yellow]No particles.out found in {data_dir}[/yellow]")
+        console.print(
+            "[dim]Enable particle output with ParticleMotion=1 and "
+            "DumpParticles=1 in input_in.txt[/dim]"
+        )
+        return
+
+    # Load particles
+    try:
+        particles = load_echo_particles(part_file)
+    except Exception as exc:
+        console.print(f"[red]Error loading particles: {exc}[/red]")
+        raise typer.Exit(1)
+
+    Np = len(particles)
+    stats = compute_particle_statistics(particles)
+
+    # Display statistics
+    console.print(
+        Panel.fit(
+            f"[bold]Particle Data: {part_file.name}[/bold]\n"
+            f"  Particles:  [cyan]{Np}[/cyan]\n"
+            f"  Mean x:     {stats.get('mean_x', 0):.4e} m\n"
+            f"  Mean y:     {stats.get('mean_y', 0):.4e} m\n"
+            f"  Mean z:     {stats.get('mean_z', 0):.4e} m\n"
+            f"  RMS x:      {stats.get('rms_x', 0):.4e} m\n"
+            f"  RMS y:      {stats.get('rms_y', 0):.4e} m\n"
+            f"  RMS z:      {stats.get('rms_z', 0):.4e} m\n"
+            f"  Mean px:    {stats.get('mean_px', 0):.4e}\n"
+            f"  Mean py:    {stats.get('mean_py', 0):.4e}\n"
+            f"  Mean pz:    {stats.get('mean_pz', 0):.4e}",
+            title="Particle Statistics",
+        )
+    )
+
+    if output:
+        _Path(output).write_text(
+            f"# ECHO2D Particle Statistics\n"
+            f"# Np = {Np}\n"
+            + "\n".join(f"# {k} = {v}" for k, v in stats.items()),
+            encoding="utf-8",
+        )
+        console.print(f"  [dim]Statistics saved to {output}[/dim]")
+
+    # ASTRA conversion
+    if to_astra:
+        try:
+            n_conv = convert_echo_to_astra(
+                echo_file=part_file,
+                astra_file=to_astra,
+                total_charge=total_charge,
+                reference_energy_MeV=energy,
+            )
+            console.print(
+                f"[green]✓ Converted {n_conv} particles to ASTRA: "
+                f"[cyan]{to_astra}[/cyan][/green]"
+            )
+        except Exception as exc:
+            console.print(f"[red]Error: ASTRA conversion failed: {exc}[/red]")
+            raise typer.Exit(1)
+
+
+@postprocess_app.command("wake-monitor")
+def postprocess_wake_monitor(
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    list_monitors: Annotated[
+        bool,
+        typer.Option("--list", "-l", help="List available WakeMonitor files"),
+    ] = False,
+    mode: Annotated[
+        int,
+        typer.Option("--mode", "-m", help="WakeMonitor mode number"),
+    ] = 0,
+    index: Annotated[
+        int,
+        typer.Option("--index", "-i", help="WakeMonitor index"),
+    ] = 0,
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="Save wake data to file"),
+    ] = None,
+    plot: Annotated[
+        bool,
+        typer.Option("--plot", "-p", help="Plot the wake monitor"),
+    ] = False,
+) -> None:
+    """Post-process WakeMonitor binary files (WakeM_XX_YYYYYY.bin).
+
+    WakeMonitor files record the wake potential at specific time steps
+    during the simulation (different from the final wakeL files).
+
+    \\b
+    Examples:
+      echo2d postprocess wake-monitor . --list
+      echo2d postprocess wake-monitor . -m 0 -i 1 --plot
+    """
+    from pyecho.project import resolve_run_dir
+    from pyecho.parser import OutputLoader
+    import numpy as np
+
+    resolved = resolve_run_dir(output_dir)
+    if resolved is not None:
+        output_dir = str(resolved)
+
+    loader = OutputLoader(output_dir)
+
+    if list_monitors:
+        wm_data = loader.load_all_wake_monitors()
+        if not wm_data:
+            console.print("[yellow]No WakeMonitor files found.[/yellow]")
+            return
+        table = Table(title="Available WakeMonitors")
+        table.add_column("Mode", style="cyan")
+        table.add_column("Index", style="green")
+        table.add_column("Points", justify="right")
+        for (m, idx), data in sorted(wm_data.items()):
+            table.add_row(str(m), str(idx), str(data["n"]))
+        console.print(table)
+        return
+
+    wm = loader.load_wake_monitor(mode=mode, index=index)
+    if wm is None:
+        console.print(
+            f"[yellow]WakeMonitor m{mode}_{index:06d} not found.[/yellow]\n"
+            f"Use --list to see available WakeMonitors."
+        )
+        return
+
+    wake = wm["wake"]
+    n = wm["n"]
+    console.print(
+        Panel.fit(
+            f"[bold]WakeMonitor m{mode}_{index:06d}.bin[/bold]\n"
+            f"  Points:     [cyan]{n}[/cyan]\n"
+            f"  Min wake:   [cyan]{np.min(wake):.4e}[/cyan]\n"
+            f"  Max wake:   [cyan]{np.max(wake):.4e}[/cyan]",
+            title="WakeMonitor Data",
+        )
+    )
+
+    if output:
+        np.savetxt(output, wake, header=f"WakeMonitor m{mode}_{index:06d}", fmt="%.8e")
+        console.print(f"  [dim]Saved to {output}[/dim]")
+
+    if plot:
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(wake, "b-", linewidth=1.5)
+        ax.set_xlabel("Time step")
+        ax.set_ylabel("Wake potential")
+        ax.set_title(f"WakeMonitor m{mode}_{index:06d}")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        if output:
+            fig.savefig(output.replace(".txt", ".png"), dpi=150, bbox_inches="tight")
+        plt.show()
+
+
+@postprocess_app.command("beam-moments")
+def postprocess_beam_moments(
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="Save beam moments to file"),
+    ] = None,
+    plot: Annotated[
+        bool,
+        typer.Option("--plot", "-p", help="Plot beam moments evolution"),
+    ] = False,
+) -> None:
+    """Post-process BeamMomentsMonitor.txt.
+
+    Displays and optionally plots the evolution of beam moments
+    (centroid position, RMS size, emittance) during the simulation.
+
+    \\b
+    Examples:
+      echo2d postprocess beam-moments .
+      echo2d postprocess beam-moments . --plot -o moments.csv
+    """
+    from pyecho.project import resolve_run_dir
+    from pyecho.parser import OutputLoader
+    import numpy as np
+
+    resolved = resolve_run_dir(output_dir)
+    if resolved is not None:
+        output_dir = str(resolved)
+
+    loader = OutputLoader(output_dir)
+    data = loader.load_beam_moments()
+
+    if data is None:
+        console.print("[yellow]No BeamMomentsMonitor.txt found.[/yellow]")
+        console.print(
+            "[dim]Enable beam monitoring with the BeamMonitor parameter "
+            "in input_in.txt[/dim]"
+        )
+        return
+
+    n_rows, n_cols = data.shape
+    console.print(
+        Panel.fit(
+            f"[bold]BeamMomentsMonitor.txt[/bold]\n"
+            f"  Time steps: [cyan]{n_rows}[/cyan]\n"
+            f"  Moments:    [cyan]{n_cols}[/cyan]",
+            title="Beam Moments",
+        )
+    )
+
+    if output:
+        header = "time_step " + " ".join(f"moment_{i}" for i in range(n_cols))
+        np.savetxt(output, data, header=header, fmt="%.8e")
+        console.print(f"  [dim]Saved to {output}[/dim]")
+
+    if plot:
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(min(n_cols, 4), 1, figsize=(10, 3 * min(n_cols, 4)), sharex=True)
+        if n_cols == 1:
+            axes = [axes]
+        for i in range(min(n_cols, 4)):
+            axes[i].plot(data[:, i], linewidth=1.2)
+            axes[i].set_ylabel(f"Moment {i}")
+            axes[i].grid(True, alpha=0.3)
+        axes[-1].set_xlabel("Time step")
+        fig.suptitle("Beam Moments Evolution", fontweight="bold")
+        fig.tight_layout()
+        if output:
+            fig.savefig(output.replace(".txt", "").replace(".csv", "") + "_moments.png",
+                        dpi=150, bbox_inches="tight")
+        plt.show()
+
+
 @postprocess_app.command("all")
 def postprocess_all(
-    output_dir: Annotated[str, typer.Argument(help="Output directory")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
     auto_detect: Annotated[
         bool,
         typer.Option("--auto-detect/--no-auto-detect", help="Auto-detect geometry type"),
     ] = True,
     skip: Annotated[
         Optional[list[str]],
-        typer.Option("--skip", help="Steps to skip"),
+        typer.Option("--skip", help="Steps to skip: wake, field, particles"),
     ] = None,
-    output_dir_out: Annotated[
+    output: Annotated[
         Optional[str],
-        typer.Option("--output-dir", "-o", help="Output directory for results"),
+        typer.Option("--output", "-o", help="Output directory for processed results"),
     ] = None,
+    plot: Annotated[
+        bool,
+        typer.Option("--plot", "-p", help="Generate plots for each step"),
+    ] = False,
 ) -> None:
     """Run all post-processing steps (wake + field + particles).
 
-    .. note::
+    Auto-detects the geometry type and runs the appropriate pipeline:
+    - Round: monopole (m=0) + dipole (m=1) wake processing
+    - Recta: Wcc + Wss assembly → Wlong, Wquad, Wdipole
+    - Field monitors: list and extract available monitors
+    - Particles: statistics and optional ASTRA conversion
 
-        This command is a **placeholder** — only ``echo2d postprocess wake``
-        is currently implemented.  Use that command for wake analysis.
-        Full pipeline (auto-detect → wake → field → particles → report)
-        is planned for a future release.
+    \\b
+    Examples:
+      echo2d postprocess all .                    # run everything
+      echo2d postprocess all . --skip field       # skip field processing
+      echo2d postprocess all . -o results/ --plot # custom output + plots
     """
-    console.print(Panel.fit(
-        "[bold yellow]⏳  Planned feature[/bold yellow]\n\n"
-        "Full post-processing pipeline is not yet implemented.\n\n"
-        "Available now:\n"
-        "  [cyan]echo2d postprocess wake <dir>[/cyan] — wake analysis\n"
-        "  [cyan]echo2d visualize wake <file>[/cyan]  — wake plotting\n\n"
-        "Expected: [cyan]echo2d v0.2.0[/cyan]",
-        title="Post-Process All",
-    ))
+    from pyecho.project import resolve_run_dir
+    from pyecho.parser import OutputLoader
+    import numpy as np
+
+    skip_set = set(skip or [])
+
+    # Resolve run ID to directory
+    resolved = resolve_run_dir(output_dir)
+    if resolved is not None:
+        output_dir = str(resolved)
+    out_path = Path(output_dir).resolve()
+
+    # Determine output directory
+    processed_dir = _find_processed_dir(out_path) if output is None else Path(output)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    # Detect geometry
+    loader = OutputLoader(out_path)
+    try:
+        from pyecho.postprocess import PostProcessor
+        pp = PostProcessor(loader)
+        geo_type = pp.geometry_type
+    except Exception:
+        geo_type = "unknown"
+
+    console.print(
+        Panel.fit(
+            f"Output dir:  [cyan]{out_path}[/cyan]\n"
+            f"Geometry:    [cyan]{geo_type}[/cyan]\n"
+            f"Processed:   [cyan]{processed_dir}[/cyan]",
+            title="Post-Process All",
+        )
+    )
+
+    results: dict = {"geometry_type": geo_type}
+
+    # ── Step 1: Wake processing ──
+    if "wake" not in skip_set:
+        console.print("\n[bold]▶ Step 1: Wake processing[/bold]")
+        try:
+            from pyecho.api import quick_postprocess
+            wake_result = quick_postprocess(output_dir, geometry=geo_type)
+            results["wake"] = wake_result
+
+            # Save wake data
+            wake_out = processed_dir / "wake"
+            wake_out.mkdir(parents=True, exist_ok=True)
+
+            if geo_type == "round":
+                _save_wake_round_data(wake_result.s, wake_result.Wlong,
+                                      "monopole", "V/pC", wake_out / "wake_monopole.txt")
+                if wake_result.Wdipole is not None:
+                    _save_wake_round_data(wake_result.s, wake_result.Wdipole,
+                                          "dipole", "V/pC/m²", wake_out / "wake_dipole.txt")
+                console.print(
+                    f"  [green]✓[/green] Round wake: "
+                    f"loss_long={wake_result.loss_long:.4f} V/pC, "
+                    f"peak={wake_result.peak:.4f} V/pC"
+                )
+            else:
+                _save_wake_flat(wake_result, wake_out)
+                console.print(
+                    f"  [green]✓[/green] Recta wake: "
+                    f"loss_long={wake_result.loss_long:.4f} V/pC, "
+                    f"kick_quad={wake_result.kick_quad:.4f} V/pC/mm, "
+                    f"kick_dipole={wake_result.kick_dipole:.4f} V/pC/mm"
+                )
+
+            _try_update_processed_manifest(out_path,
+                loss_long=wake_result.loss_long if geo_type == "round" else wake_result.loss_long,
+                peak=getattr(wake_result, "peak", None),
+                kick_quad=getattr(wake_result, "kick_quad", None),
+                kick_dipole=getattr(wake_result, "kick_dipole", None),
+            )
+
+            if plot:
+                _plot_wake_result(wake_result, geo_type, wake_out)
+
+        except Exception as exc:
+            console.print(f"  [yellow]⚠ Wake processing failed: {exc}[/yellow]")
+            results["wake"] = None
+
+    # ── Step 2: Field monitor processing ──
+    if "field" not in skip_set:
+        console.print("\n[bold]▶ Step 2: Field monitor processing[/bold]")
+        monitors = loader.list_monitors()
+        if monitors:
+            console.print(f"  Found [cyan]{len(monitors)}[/cyan] monitor(s)")
+            field_out = processed_dir / "field"
+            field_out.mkdir(parents=True, exist_ok=True)
+            for m, n in monitors[:10]:  # limit to first 10
+                try:
+                    monitor = loader.load_monitor(mode=m, monitor_id=n)
+                    if monitor is not None:
+                        console.print(
+                            f"  [green]✓[/green] m{m}_N{n}: "
+                            f"{monitor.field_component}, "
+                            f"shape={monitor.F.shape}"
+                        )
+                except Exception as exc:
+                    console.print(f"  [dim]○ m{m}_N{n}: {exc}[/dim]")
+        else:
+            console.print("  [dim]No field monitors found[/dim]")
+
+    # ── Step 3: Particle processing ──
+    if "particles" not in skip_set:
+        console.print("\n[bold]▶ Step 3: Particle processing[/bold]")
+        data_dir = loader._resolve_data_dir()
+        part_file = data_dir / "particles.out"
+        if part_file.exists():
+            try:
+                from pyecho.postprocess.particles import (
+                    load_echo_particles, compute_particle_statistics,
+                )
+                particles = load_echo_particles(part_file)
+                stats = compute_particle_statistics(particles)
+                results["particles"] = {"n_particles": len(particles), "stats": stats}
+                console.print(
+                    f"  [green]✓[/green] {len(particles)} particles loaded, "
+                    f"rms_z={stats.get('rms_z', 0):.4e} m"
+                )
+                # Save statistics
+                part_out = processed_dir / "particles"
+                part_out.mkdir(parents=True, exist_ok=True)
+                (part_out / "statistics.txt").write_text(
+                    f"# ECHO2D Particle Statistics\n"
+                    f"# Np = {len(particles)}\n"
+                    + "\n".join(f"# {k} = {v}" for k, v in stats.items()),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                console.print(f"  [yellow]⚠ Particle processing failed: {exc}[/yellow]")
+        else:
+            console.print("  [dim]No particles.out found[/dim]")
+
+    # ── Summary ──
+    console.print(f"\n[bold green]✓ Post-processing complete.[/bold green]")
+    console.print(f"  Results saved to [cyan]{processed_dir}[/cyan]")
+
+
+def _plot_wake_result(wake_result: Any, geo_type: str, wake_out: Path) -> None:
+    """Generate and save wake plots (best-effort)."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        if geo_type == "round":
+            from pyecho.visualize import plot_round_wake
+            fig, _ = plot_round_wake(wake_result)
+        else:
+            from pyecho.visualize import plot_flat_wake
+            data_dir = wake_out.parent.parent  # run dir
+            for sub in ("magn", "elec"):
+                cand = data_dir / sub
+                if cand.is_dir():
+                    data_dir = cand
+                    break
+            from pyecho.parser import load_bunch_profile
+            # Try to load bunch from magn/ directory
+            magn_dir = data_dir / "magn" if (data_dir / "magn").is_dir() else data_dir
+            _, bunch = load_bunch_profile(magn_dir, 0, wake_result.s)
+            fig, _ = plot_flat_wake(wake_result, bunch=bunch)
+
+        fig.savefig(str(wake_out / "wake_plot.png"), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    except Exception:
+        pass  # plotting is best-effort
 
 
 # ===================================================================
@@ -2526,6 +3103,80 @@ def visualize_modes(
 
     if not no_show:
         import matplotlib.pyplot as plt
+        plt.show()
+
+
+@visualize_app.command("field")
+def visualize_field(
+    output_dir: Annotated[str, typer.Argument(help="Output directory")],
+    mode: Annotated[
+        int,
+        typer.Option("--mode", "-m", help="Azimuthal mode number"),
+    ] = 0,
+    monitor_id: Annotated[
+        int,
+        typer.Option("--monitor-id", "-n", help="Monitor index"),
+    ] = 1,
+    component: Annotated[
+        Optional[str],
+        typer.Option("--component", "-c", help="Field component (if multiple per monitor)"),
+    ] = None,
+    time_step: Annotated[
+        int,
+        typer.Option("--time-step", "-t", help="Time step index to display"),
+    ] = 0,
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="Save plot to file"),
+    ] = None,
+    no_show: Annotated[
+        bool,
+        typer.Option("--no-show", help="Do not display plot window"),
+    ] = False,
+) -> None:
+    """Visualize field monitor data.
+
+    Displays a 2-D pseudocolor plot of the field from an ECHO2D
+    field monitor file (Monitor_mXX_NYY.txt).  For 3-D monitors
+    (time × z × r), a time slice is selected with --time-step.
+
+    \\b
+    Examples:
+      echo2d visualize field . -m 1 -n 1 -t 0
+      echo2d visualize field . -m 0 -n 1 --component Ez -o field.png
+    """
+    from pyecho.parser import OutputLoader
+    from pyecho.visualize import plot_field
+    import matplotlib.pyplot as plt
+
+    loader = OutputLoader(output_dir)
+    monitor = loader.load_monitor(mode=mode, monitor_id=monitor_id)
+
+    if monitor is None:
+        console.print(
+            f"[yellow]Monitor m{mode}_N{monitor_id} not found.[/yellow]\n"
+            f"Use [cyan]echo2d postprocess field --list[/cyan] to see available monitors."
+        )
+        return
+
+    # Select time slice for 3-D data
+    if monitor.F.ndim >= 3 and time_step < monitor.F.shape[0]:
+        console.print(
+            f"  [dim]Selecting time step {time_step}/{monitor.F.shape[0]} "
+            f"(t = {monitor.T[time_step]:.3e})[/dim]"
+        )
+
+    try:
+        fig, ax = plot_field(monitor, time_step=time_step)
+    except Exception as exc:
+        console.print(f"[red]Error plotting field: {exc}[/red]")
+        raise typer.Exit(1)
+
+    if output:
+        fig.savefig(output, dpi=150, bbox_inches="tight")
+        console.print(f"[green]Plot saved to {output}[/green]")
+
+    if not no_show:
         plt.show()
 
 
@@ -3327,17 +3978,6 @@ def _collect_output(work_dir: Path, dest_dir: Path, symmetry: str) -> None:
                 shutil.move(str(child), str(dest))
 
 
-def _generate_template_input(template: str) -> str:
-    """Generate a minimal input_in.txt from a template name."""
-    from pyecho.config import ECHO2DParams
-
-    try:
-        params = ECHO2DParams.from_template(template)
-    except ValueError:
-        params = ECHO2DParams.from_template("round_collimator")
-
-    return params.to_input_file()
-
 
 def _serialize_geo(geo: dict) -> dict:
     """Serialize geometry dict to JSON-compatible format."""
@@ -3549,43 +4189,60 @@ def _generate_corrugated_geometry(
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _generate_dlw_geometry(
-    target: Path,
-    half_gap: float = 5.0,
-    thickness: float = 2.0,
-    length: float = 80.0,
-    epsilon_r: float = 5.6,
-) -> str:
-    """Generate a recta DLW geometry file.
 
-    Creates a dielectric-lined waveguide geometry with the specified
-    parameters.  Units should match the template's Units field (mm).
+def _plot_field_2d(
+    F: "np.ndarray",
+    Z: "np.ndarray | None" = None,
+    R: "np.ndarray | None" = None,
+    *,
+    title: str = "",
+    output: str | None = None,
+    no_show: bool = False,
+) -> None:
+    """Plot a 2-D field monitor slice as pseudocolor.
+
+    Parameters
+    ----------
+    F : np.ndarray
+        Field data (2-D: nz x nr).
+    Z : np.ndarray, optional
+        Longitudinal coordinate array.
+    R : np.ndarray, optional
+        Transverse coordinate array.
+    title : str
+        Plot title.
+    output : str, optional
+        Save plot to file.
+    no_show : bool
+        If True, do not display plot window.
     """
-    a = half_gap
-    d = thickness
-    L = length
-    b = a + d
+    import matplotlib.pyplot as plt
 
-    content = (
-        f"% Number of materials\n"
-        f"2\n"
-        f"% Number of elements in metal with conductive walls, "
-        f"permeability, permitivity, conductivity\n"
-        f"1 1 1 0\n"
-        f"% Segments of lines and elipses with conductivity\n"
-        f"0\t{b}\t{L}\t{b}\t0\t0\t0\t0\t1\t0\n"
-        f"% Number of elements in material 1, permitivity, "
-        f"permeability, conductivity\n"
-        f"4 {epsilon_r} 1 0\n"
-        f"% Segments of lines and elipses\n"
-        f"0\t{a}\t0\t{b}\t0\t0\t0\t0\t1\t0\n"
-        f"0\t{b}\t{L}\t{b}\t0\t0\t0\t0\t1\t0\n"
-        f"{L}\t{b}\t{L}\t{a}\t0\t0\t0\t0\t1\t0\n"
-        f"{L}\t{a}\t0\t{a}\t0\t0\t0\t0\t1\t0\n"
-    )
-    filename = "dlw.txt"
-    (target / filename).write_text(content, encoding="utf-8")
-    return filename
+    if F.ndim != 2:
+        console.print("[yellow]Warning: Field is not 2-D; skipping plot.[/yellow]")
+        return
+
+    if Z is None:
+        Z = np.arange(F.shape[1])
+    if R is None:
+        R = np.arange(F.shape[0])
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    im = ax.pcolormesh(Z * 1e3, R * 1e3, F, shading="auto", cmap="RdBu_r")
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("Field")
+    ax.set_xlabel("z [mm]")
+    ax.set_ylabel("r/y [mm]")
+    ax.set_title(title or "Field Monitor")
+    fig.tight_layout()
+
+    if output:
+        fig.savefig(output.replace(".txt", ".png"), dpi=150, bbox_inches="tight")
+        console.print(f"  [dim]Plot saved to {output.replace('.txt', '.png')}[/dim]")
+    if not no_show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 def _resolve_plot_data_dir(output_dir: str) -> Path:
@@ -3703,8 +4360,8 @@ def _save_wake_round_data(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     data = np.column_stack((s, W))
     header = (
-        f"{label} wake (round geometry)\n"
-        f"s [mm]  {label} [{units}]"
+        f"# {label} wake (round geometry)\n"
+        f"# s [mm]  W [{units}]"
     )
     np.savetxt(str(out_path), data, header=header, fmt="%.8e")
 
@@ -3728,18 +4385,18 @@ def _save_wake_flat(result: Any, out_dir: Path) -> None:
 
     def _save_col(name: str, y: "np.ndarray", unit: str) -> None:
         data = np.column_stack((result.s, y))
-        header = f"{name} wake\ns [mm]  {name} [{unit}]"
+        header = f"# {name} wake (recta geometry)\n# s [mm]  W [{unit}]"
         np.savetxt(out_dir / f"{name}.txt", data, header=header, fmt="%.8e")
 
-    _save_col("Wlong", result.Wlong, "V/pC")
-    _save_col("Wquad", result.Wquad, "V/pC/mm")
+    _save_col("wake_longitudinal", result.Wlong, "V/pC")
+    _save_col("wake_quadrupole", result.Wquad, "V/pC/mm")
 
     if hasattr(result, "Wdipole") and np.any(result.Wdipole):
-        _save_col("Wdipole", result.Wdipole, "V/pC/mm")
+        _save_col("wake_dipole", result.Wdipole, "V/pC/mm")
 
     # summary
     summary = (
-        f"Geometry: rectangular (flat)\n"
+        f"Geometry: rectangular (recta)\n"
         f"Longitudinal loss: {result.loss_long:.6f} V/pC\n"
         f"Quadrupole kick:   {result.kick_quad:.6f} V/pC/mm\n"
         f"Dipole kick:       {result.kick_dipole:.6f} V/pC/mm\n"
@@ -3747,73 +4404,6 @@ def _save_wake_flat(result: Any, out_dir: Path) -> None:
     (out_dir / "summary.txt").write_text(summary, encoding="utf-8")
 
 
-def _generate_dlw_readme(name: str) -> str:
-    """Generate a detailed README for DLW projects."""
-    return f"""# {name} — Dielectric Lined Waveguide (DLW)
-
-## 结构参数 (geometry file: dlw.txt)
-
-| 参数 | 值 | 单位 | 说明 |
-|------|-----|------|------|
-| 半间隙 a | 5.0 | mm | 真空区域，对称面到介质内表面 |
-| 介质厚度 d | 2.0 | mm | 介质层厚度 |
-| 外边界 b | 7.0 | mm | a + d，金属壁位置 |
-| 长度 L | 80.0 | mm | 结构纵向长度 |
-| 介电常数 εᵣ | 5.6 | — | 介质相对介电常数 |
-| 管道宽度 | 20.0 | mm | 矩形管道物理宽度 |
-
-```
-侧视图 (y-z 平面，y=0 是对称轴):
-  y (mm)
-  7.0 ┌───────────────┐ ← 金属外壁
-      │░░░░ 介质 ░░░░░│
-  5.0 ├───────────────┤ ← 介质内表面
-      │   真空区域    │
-  0.0 ════════════════ ← 对称面
-      z=0         z=80
-```
-
-## 仿真参数
-
-| 参数 | 值 | 单位 | 说明 |
-|------|-----|------|------|
-| BunchSigma | 0.1 | mm | 束团 RMS 长度 |
-| Offset | 0 | 网格线 | y₀ = Offset × StepY = 0 (在轴上) |
-| StepY, StepZ | 0.05 | mm | 网格步长 |
-| MeshLength | 250 | 网格线 | 移动网格长度 |
-| Modes | 1,3,5 | — | 计算的 Fourier 模式 |
-| SymmetryCondition | magn | — | 先跑 magn，再改 elec 跑第二遍 |
-| WakeIntMethod | dir | — | 直接 wake 积分法 |
-
-### Offset 说明
-- 矩形几何: y₀ = Offset × StepY (无 +0.5 偏移)
-- 圆形几何: r₀ = (Offset + 0.5) × StepR
-- Offset = -1: 自动取最大可能值
-
-## 使用方法
-
-```bash
-# 1. 验证配置
-echo2d config validate input_in.txt
-
-# 2. 跑 magn 仿真
-echo2d run single -d . -n 4
-
-# 3. 改 SymmetryCondition=elec，再跑
-echo2d run single -d . -n 4
-
-# 4. 后处理 (组装 magn + elec)
-echo2d postprocess wake . --plot
-
-# 5. 导出结果
-echo2d export csv elec/ -o csv_elec/
-echo2d export csv magn/ -o csv_magn/
-```
-
-## 模板自定义
-
-修改 `input_in.txt` 中的参数后直接运行。几何文件 `dlw.txt` 可手动编辑或替换为其他 DLW 几何。
-"""
 
 
 # ===================================================================
