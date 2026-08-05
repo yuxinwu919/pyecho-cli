@@ -2297,6 +2297,22 @@ def postprocess_field(
         bool,
         typer.Option("--synthesize", help="Synthesize total field from modal monitors"),
     ] = False,
+    x0: Annotated[
+        float,
+        typer.Option("--x0", help="Source transverse offset [m] for synthesis (default: 0)"),
+    ] = 0.0,
+    x: Annotated[
+        float,
+        typer.Option("--x", help="Observation transverse position [m] for synthesis (default: 0)"),
+    ] = 0.0,
+    D: Annotated[
+        Optional[float],
+        typer.Option("--D", "--width", help="Structure width [m] for synthesis (auto-detected if omitted)"),
+    ] = None,
+    n_modes_synth: Annotated[
+        int,
+        typer.Option("--n-modes", help="Number of odd modes for synthesis (default: 15)"),
+    ] = 15,
     output: Annotated[
         Optional[str],
         typer.Option("--output", "-o", help="Output file for extracted data"),
@@ -2366,7 +2382,10 @@ def postprocess_field(
                 magn_dir=loader._resolve_data_dir(),
                 component=component,
                 monitor_id=monitor_id,
-                n_modes=mode if mode > 0 else 15,
+                x0=x0,
+                x=x,
+                n_modes=n_modes_synth,
+                D=D,
             )
         except Exception as exc:
             console.print(f"[red]Error: Field synthesis failed: {exc}[/red]")
@@ -3227,6 +3246,20 @@ def export_hdf5(
         if currents is not None:
             f.create_dataset("currents_z", data=currents[1], compression="gzip", compression_opts=compress)
             f.create_dataset("s_current", data=currents[0], compression="gzip", compression_opts=compress)
+
+        # Export field monitors
+        monitors = loader.list_monitors()
+        for mode, mon_id in monitors:
+            mon = loader.load_monitor(mode=mode, monitor_id=mon_id)
+            if mon is not None:
+                g = f.create_group(f"monitors/m{mode:02d}_N{mon_id:02d}")
+                g.create_dataset("T", data=mon.T, compression="gzip", compression_opts=compress)
+                g.create_dataset("Z", data=mon.Z, compression="gzip", compression_opts=compress)
+                g.create_dataset("R", data=mon.R, compression="gzip", compression_opts=compress)
+                g.create_dataset("F", data=mon.F, compression="gzip", compression_opts=compress)
+                g.attrs["component"] = mon.field_component
+                g.attrs["time_type"] = mon.time_type
+                g.attrs["D"] = mon.D
 
     console.print(f"[bold green]✓[/bold green] Exported to [cyan]{out_path}[/cyan]")
 

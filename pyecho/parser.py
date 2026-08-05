@@ -661,56 +661,71 @@ class OutputLoader:
         header = _parse_monitor_full(filepath)
         data = _read_monitor_data(filepath)
 
-        # Determine time_type: check if 'ks'/'hs'/'s0' exists (s-time) or
-        # 'kz'/'hz'/'z0' (z-time)
-        if "ks" in header or "hs" in header or "s0" in header:
+        # ---- Remap ECHO2D header keys to canonical names ----
+        # Real files use: k_ct/h_ct/ct0, k_r/h_r/r0,
+        #   s-type: k_z/h_z/z0   (static lab-frame window)
+        #   z-type: k_s/h_s/s0   (moving co-moving window)
+        # _parse_monitor_full stores them verbatim (k_ct, h_ct, etc.)
+        kt  = header.get("k_ct", data.shape[0])
+        ht  = header.get("h_ct", 1.0)
+        t0  = header.get("ct0", 0.0)
+        kr  = header.get("k_r", 1)
+        hr  = header.get("h_r", 1.0)
+        _r0 = header.get("r0", 0.0)
+
+        # Determine time_type: s-type has k_z; z-type has k_s
+        has_kz = "k_z" in header
+        has_ks = "k_s" in header
+        if has_kz and not has_ks:
             time_type = "s"
+        elif has_ks and not has_kz:
+            time_type = "z"
+        elif "time_type" in header:
+            time_type = header["time_type"]
         else:
+            # Fallback: first header line "time=z" or "time=s"
             time_type = "z"
 
-        # Construct coordinate arrays
-        # For s-time monitors:
-        #   T = t0 + ht * arange(kt)      (time array)
-        #   Z = z0 + hz * arange(kz)      (longitudinal array)
-        #   R = r0 + hr * arange(kr)      (transverse array)
-        # For z-time monitors:
-        #   T = t0 + ht * arange(kt)
-        #   Z = z0 + hz * arange(kz)
-        #   R = r0 + hr * arange(kr)
+        # ---- Build coordinate arrays ----
+        T = np.arange(kt, dtype=np.float64) * ht + t0
+        R = np.arange(kr, dtype=np.float64) * hr + _r0
 
-        kt = header.get("kt", data.shape[0] if data.ndim >= 2 else 1)
-        ht = header.get("ht", 1.0)
-        t0 = header.get("t0", 0.0)
-        kr = header.get("kr", data.shape[1] if data.ndim >= 2 else data.shape[0])
-        hr_val = header.get("hr", 1.0)
-        r0 = header.get("r0", 0.0)
+        # Strip the leading per-row coordinate column (ct for s-type,
+        # window z-position for z-type), then reshape field grid
+        mesh_pos = data[:, 0].copy()   # per-row coordinate
+        F_flat = data[:, 1:]            # field values only
 
         if time_type == "s":
-            ks = header.get("ks", data.shape[0] if data.ndim >= 2 else 1)
-            hs = header.get("hs", 1.0)
-            s0 = header.get("s0", 0.0)
-            kz_val = header.get("kz", data.shape[1] if data.ndim >= 2 else data.shape[0])
-            hz_val = header.get("hz", 1.0)
-            z0 = header.get("z0", 0.0)
-
-            T = np.arange(kt, dtype=np.float64) * ht + t0
-            Z = np.arange(kz_val, dtype=np.float64) * hz_val + z0
-            R = np.arange(kr, dtype=np.float64) * hr_val + r0
-            F = data  # shape (kt, kz, ...) or similar
+            # s-type: static lab-frame z-grid [z0, z1] with k_z points
+            kz = header.get("k_z", 1)
+            hz = header.get("h_z", 1.0)
+            _z0 = header.get("z0", 0.0)
+            Z = np.arange(kz, dtype=np.float64) * hz + _z0
+            # Reshape: (kt, kz*kr) → attempt (kt, kz, kr), fallback (kt, -1)
+            if F_flat.shape[1] == kz * kr:
+                F = F_flat.reshape(kt, kz, kr)
+            else:
+                F = F_flat
         else:
-            kz_val = header.get("kz", data.shape[0] if data.ndim >= 2 else 1)
-            hz_val = header.get("hz", 1.0)
-            z0 = header.get("z0", 0.0)
+            # z-type: moving co-moving s-grid [s0, s1] with k_s points
+            ks = header.get("k_s", 1)
+            hs = header.get("h_s", 1.0)
+            _s0 = header.get("s0", 0.0)
+            S = np.arange(ks, dtype=np.float64) * hs + _s0
+            Z = -S  # MATLAB convention: Z = -S for z-time
+            # Reshape: (kt, ks*kr) → (kt, ks, kr)
+            if F_flat.shape[1] == ks * kr:
+                F = F_flat.reshape(kt, ks, kr)
+            else:
+                F = F_flat
+            # Store mesh_pos for lab-frame reconstruction:
+            # z_lab = mesh_pos[i] + Z  (MATLAB: MeshPos + Z)
 
-            T = np.arange(kt, dtype=np.float64) * ht + t0
-            Z = np.arange(kz_val, dtype=np.float64) * hz_val + z0
-            R = np.arange(kr, dtype=np.float64) * hr_val + r0
-            F = data
-
+        # Store mesh_pos as an attribute for downstream z-time reconstruction
         component = header.get("field_component", "Ez")
-        D_val = header.get("D", 1.0)
+        D_val = header.get("D", header.get("width", 1.0))
 
-        return MonitorData(
+        monitor = MonitorData(
             monitor_id=monitor_id,
             field_component=component,
             time_type=time_type,
@@ -720,6 +735,9 @@ class OutputLoader:
             F=F,
             D=D_val,
         )
+        # Attach per-row mesh position for z-time lab-frame reconstruction
+        monitor._mesh_pos = mesh_pos  # type: ignore[attr-defined]
+        return monitor
 
     def list_monitors(self) -> list[tuple[int, int]]:
         """List available monitor files.
@@ -991,13 +1009,21 @@ def _parse_monitor_full(filepath: Path) -> dict:
                 header["time_type"] = "s"
 
             # Parse key=value or key = value pairs
+            # Real ECHO2D headers use SPACE-separated pairs:
+            #   % k_ct=81 h_ct=1.000000e-03 ct0=2.100000e-02
+            # Also support comma-separated (legacy manual format)
             if "=" in s_clean:
-                parts = [p.strip() for p in s_clean.split(",")]
+                # Split on spaces OR commas to handle both formats
+                parts = []
+                for segment in s_clean.split(","):
+                    parts.extend(segment.strip().split())
                 for part in parts:
                     if "=" in part:
                         k, _, v = part.partition("=")
                         k = k.strip()
                         v = v.strip()
+                        if not k:
+                            continue
                         try:
                             if "." in v or "e" in v.lower():
                                 header[k] = float(v)

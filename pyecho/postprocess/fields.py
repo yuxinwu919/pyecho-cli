@@ -222,21 +222,18 @@ def synthesize_total_field(
     n_modes: int = 35,
     D: float | None = None,
 ) -> np.ndarray:
-    """Synthesize the total field from a set of modal monitor files.
+    """Synthesize the total field from modal monitor files.
 
-    Replicates ``PP_CreateTotalField_EzEyBx.m``.
+    Replicates ``PP_CreateTotalField_EzEyBx.m`` exactly.
 
-    In a flat rectangular structure, the total field at transverse
-    position *x* (relative to centre *x0*) is obtained by summing
-    contributions from each odd Fourier mode::
+    In a flat rectangular structure of width *D*, the total field at
+    transverse position *x* for a source at *x0* is::
 
-        F_{\\mathrm{total}}(t,z) =
-            \\sum_{m=1,3,5,\\dots}^{2N_m-1}
-            F_m(t,z) \\cdot \\sin(k_m \\cdot x_0)
-            \\cdot \\sin(k_m \\cdot x)
+        F_total = (2/D) * Σ_m F_m * sin(k_m*(x0 + D/2)) * sin(k_m*(x + D/2))
 
-    where :math:`k_m = \\pi \\cdot m / D` and *D* is the structure
-    width.
+    where :math:`k_m = \\pi \\cdot m / D`, m = 1, 3, 5, ..., 2*Nm-1.
+    The ``+D/2`` shift accounts for the side-wall boundary condition
+    (see PRSTAB 18 (2015) 104401, Eq. 3).
 
     Parameters
     ----------
@@ -247,14 +244,16 @@ def synthesize_total_field(
     x : float
         Observation transverse position [m].
     n_modes : int
-        Number of odd modes to include.
+        Number of odd modes to include.  Default 35 (MATLAB convention).
     D : float, optional
-        Structure width [m].  If ``None``, read from the first monitor file.
+        Structure width [m].  If ``None``, auto-detected from the first
+        file's ``width=...`` header.
 
     Returns
     -------
     np.ndarray
-        Synthesised total field array, same shape as each modal field.
+        Synthesised total field array, same shape as each modal field
+        (including the leading coordinate column if present).
 
     Raises
     ------
@@ -265,6 +264,7 @@ def synthesize_total_field(
         raise PostProcessError("No monitor files provided for synthesis.")
 
     total_field: np.ndarray | None = None
+    prev_norm: float | None = None
 
     for i, fpath in enumerate(monitor_files[:n_modes]):
         fpath = Path(fpath)
@@ -273,54 +273,80 @@ def synthesize_total_field(
             continue
 
         try:
-            data = np.loadtxt(fpath)
+            data = np.loadtxt(fpath, comments="%")
         except Exception as exc:
             raise PostProcessError(f"Failed to load {fpath}: {exc}") from exc
 
         m = 2 * i + 1  # odd mode: 1, 3, 5, ...
 
-        # Auto-detect D from first file if not provided
+        # Auto-detect D from first file header
         if D is None and i == 0:
-            # In ECHO2D format, D may be in header.  Try to parse from first
-            # file's header lines (lines starting with %).
-            try:
-                with open(fpath, "r", encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if line.startswith("%") and "width" in line.lower():
-                            # e.g. "% structure width = 0.023"
-                            parts = line.split("=")
-                            if len(parts) == 2:
-                                D = float(parts[1].strip())
-                            break
-            except Exception:
-                pass
-
+            D = _parse_width_from_monitor(fpath)
             if D is None:
-                # Fallback: assume first data column header-like
-                # or use a default
                 raise PostProcessError(
                     "Cannot determine structure width D from monitor files. "
                     "Please provide the `D` parameter explicitly."
                 )
 
+        # Leading column (ct or z-position) excluded from field data
+        # (MATLAB: F(:,2:p) = ... where p = kz*kr+1)
+        if data.shape[1] > 1:
+            field_only = data[:, 1:]
+        else:
+            field_only = data
+
         k_m = np.pi / D * m
-        weight = np.sin(k_m * x0) * np.sin(k_m * x)
+        # MATLAB weight: sin(k_m*(x0 + D/2)) * sin(k_m*(x + D/2))
+        weight = np.sin(k_m * (x0 + 0.5 * D)) * np.sin(k_m * (x + 0.5 * D))
+
+        weighted = field_only * weight
+        norm = float(np.linalg.norm(weighted))
 
         if total_field is None:
-            total_field = data * weight
+            total_field = weighted
+            prev_norm = norm
         else:
-            if data.shape != total_field.shape:
+            if weighted.shape != total_field.shape:
                 raise PostProcessError(
-                    f"Shape mismatch in mode {m}: {data.shape} vs "
+                    f"Shape mismatch in mode {m}: {weighted.shape} vs "
                     f"{total_field.shape}"
                 )
-            total_field += data * weight
+            total_field += weighted
+            # MATLAB convergence check: err = (N-N1)/N*100
+            if prev_norm and prev_norm > 0:
+                err_pct = abs(norm - prev_norm) / norm * 100
+                logger.debug("Mode %d: norm error %.2f%%", m, err_pct)
+            prev_norm = norm
 
     if total_field is None:
         raise PostProcessError("No valid monitor data loaded for synthesis.")
 
+    # Apply 2/D normalisation (MATLAB: F(:,2:p) = F(:,2:p)/D*2)
+    total_field = total_field * (2.0 / D)
+
     return total_field
+
+
+def _parse_width_from_monitor(filepath: Path) -> float | None:
+    """Extract structure width D from a monitor file header.
+
+    Looks for ``width=X.XXXe+XX`` in the first ``% Field=...`` header line.
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as fh:
+            first_line = fh.readline().strip()
+    except OSError:
+        return None
+    if not first_line.startswith("%"):
+        return None
+    # "% Field=Ez time=z  width=5.000000e-02"
+    for token in first_line.lstrip("%").strip().split():
+        if token.startswith("width="):
+            try:
+                return float(token.split("=", 1)[1])
+            except (ValueError, IndexError):
+                pass
+    return None
 
 
 def synthesize_total_field_from_loader(
@@ -344,20 +370,20 @@ def synthesize_total_field_from_loader(
     component : str
         Field component label (e.g. ``"Ez"``, ``"Ey"``, ``"Hx"``).
     monitor_id : int
-        Monitor index.
+        Monitor index (N in Monitor_mXX_NYY.txt).
     x0 : float
-        Source transverse offset [m].
+        Source transverse offset [m] (beam position).
     x : float
         Observation transverse position [m].
     n_modes : int
-        Number of modes.
+        Number of odd modes to include.  Default 35 (MATLAB convention).
     D : float, optional
-        Structure width [m].
+        Structure width [m].  Auto-detected from first file if None.
 
     Returns
     -------
     np.ndarray
-        Synthesised total field.
+        Synthesised total field (2-D: n_time × n_space).
 
     Raises
     ------
