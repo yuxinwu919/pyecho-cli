@@ -134,25 +134,45 @@ def extract_field_at_point(
 
     if F.ndim == 3:
         # 3-D: (nt, nz, nr) — full 3-D monitor
-        points = []
-        axes = []
+        # If t is given, interpolate at fixed (t, z, r) → scalar
+        # If t is None but z,r given, extract 1-D trace over time
         if t is not None:
-            points.append(t)
-            axes.append(T)
-        if z is not None:
-            points.append(z)
-            axes.append(Z)
-        if r is not None:
-            points.append(r)
-            axes.append(R)
-
-        if len(points) == 0:
+            # Single point interpolation
+            points = [t]
+            axes = [T]
+            if z is not None:
+                points.append(z); axes.append(Z)
+            if r is not None:
+                points.append(r); axes.append(R)
+            interp = RegularGridInterpolator(
+                tuple(axes), F, bounds_error=False, fill_value=0.0
+            )
+            return float(interp(np.atleast_2d(points))[0])
+        elif z is not None and r is not None:
+            # Extract 1-D trace over time at fixed (z, r)
+            interp_zr = RegularGridInterpolator(
+                (Z, R), F[0, :, :], bounds_error=False, fill_value=0.0
+            )
+            # Verify z,r are within bounds
+            trace = np.zeros(len(T), dtype=np.float64)
+            for i in range(len(T)):
+                trace[i] = float(interp_zr(np.array([[z, r]]))[0])
+            return trace
+        elif z is not None:
+            # Extract 2-D (t, z) slice at fixed r
+            r_mid = float(np.median(R))
+            interp_z = RegularGridInterpolator(
+                (Z,), np.zeros(len(Z)), bounds_error=False, fill_value=0.0
+            )
+            r_idx = int(np.interp(r_mid, R, np.arange(len(R))))
+            return F[:, :, r_idx]  # (nt, nz) slice
+        elif r is not None:
+            # Extract 2-D (t, r) slice at fixed z
+            z_mid = float(np.median(Z))
+            z_idx = int(np.interp(z_mid, Z, np.arange(len(Z))))
+            return F[:, z_idx, :]  # (nt, nr) slice
+        else:
             return F
-
-        interp = RegularGridInterpolator(
-            tuple(axes), F, bounds_error=False, fill_value=0.0
-        )
-        return float(interp(np.atleast_2d(points))[0])
 
     logger.warning(
         "Unsupported monitor dimensionality %dD; returning raw data.", F.ndim

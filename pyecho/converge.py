@@ -250,3 +250,38 @@ class ConvergenceRunner:
             return wake.loss_long  # type: ignore[union-attr]
         finally:
             shutil.rmtree(conv_dir, ignore_errors=True)
+
+
+def run_convergence(
+    project: str,
+    mesh_factors: str = "2.0 1.0 0.5",
+    modes: str | None = None,
+    threads: int = 1,
+) -> ConvergenceReport:
+    """CLI entry point for convergence study.
+
+    Parameters
+    ----------
+    project : str
+        Project name or path.
+    mesh_factors : str
+        Space-separated mesh factors (e.g. ``"2.0 1.0 0.5"``).
+    modes : str, optional
+        Space-separated mode numbers.
+    threads : int
+        OpenMP threads per run.
+
+    Returns
+    -------
+    ConvergenceReport
+    """
+    factors = [float(x) for x in mesh_factors.split()]
+    mode_list = [int(x) for x in modes.split()] if modes else None
+
+    runner = ConvergenceRunner(project)
+    return runner.run(
+        mesh_factors=factors,
+        modes=mode_list,
+        threads=threads,
+        verbose=True,
+    )
