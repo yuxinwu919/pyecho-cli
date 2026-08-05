@@ -368,13 +368,18 @@ def synthesize_total_field_from_loader(
     files: list[Path] = []
     for i in range(1, n_modes + 1):
         m = 2 * i - 1
-        # Try with component suffix first, then bare
-        fname = f"Monitor_m{m}_N{monitor_id}_{component}.txt"
-        candidate = magn_dir / fname
+        # ECHO2D produces zero-padded filenames: Monitor_m09_N01.txt
+        # Try zero-padded first, then unpadded (backward compatibility)
+        fname = f"Monitor_m{m:02d}_N{monitor_id:02d}.txt"
+        fname_with_comp = f"Monitor_m{m:02d}_N{monitor_id:02d}_{component}.txt"
+        candidate = magn_dir / fname_with_comp
         if not candidate.exists():
-            # Try without component suffix
-            fname = f"Monitor_m{m}_N{monitor_id}.txt"
             candidate = magn_dir / fname
+        if not candidate.exists():
+            # Fallback: unpadded legacy format
+            candidate = magn_dir / f"Monitor_m{m}_N{monitor_id}_{component}.txt"
+            if not candidate.exists():
+                candidate = magn_dir / f"Monitor_m{m}_N{monitor_id}.txt"
         if candidate.exists():
             files.append(candidate)
         else:

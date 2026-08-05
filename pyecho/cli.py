@@ -2515,9 +2515,9 @@ def postprocess_particles(
             f"  Mean x:     {stats.get('mean_x', 0):.4e} m\n"
             f"  Mean y:     {stats.get('mean_y', 0):.4e} m\n"
             f"  Mean z:     {stats.get('mean_z', 0):.4e} m\n"
-            f"  RMS x:      {stats.get('rms_x', 0):.4e} m\n"
-            f"  RMS y:      {stats.get('rms_y', 0):.4e} m\n"
-            f"  RMS z:      {stats.get('rms_z', 0):.4e} m\n"
+            f"  σ_x:        {stats.get('sigma_x', 0):.4e} m\n"
+            f"  σ_y:        {stats.get('sigma_y', 0):.4e} m\n"
+            f"  σ_z:        {stats.get('sigma_z', 0):.4e} m\n"
             f"  Mean px:    {stats.get('mean_px', 0):.4e}\n"
             f"  Mean py:    {stats.get('mean_py', 0):.4e}\n"
             f"  Mean pz:    {stats.get('mean_pz', 0):.4e}",
@@ -2876,7 +2876,7 @@ def postprocess_all(
                 results["particles"] = {"n_particles": Np, "stats": stats}
                 console.print(
                     f"  [green]✓[/green] {Np} particles loaded, "
-                    f"rms_z={stats.get('rms_z', 0):.4e} m"
+                    f"σ_z={stats.get('sigma_z', 0):.4e} m"
                 )
                 # Save statistics
                 part_out = processed_dir / "particles"
@@ -4227,10 +4227,37 @@ def _plot_field_2d(
         console.print("[yellow]Warning: Field is not 2-D; skipping plot.[/yellow]")
         return
 
+    n_rows, n_cols = F.shape
     if Z is None:
-        Z = np.arange(F.shape[1])
+        Z = np.arange(n_cols)
     if R is None:
-        R = np.arange(F.shape[0])
+        R = np.arange(n_rows)
+
+    # Handle shape mismatch: try transpose, or fall back to line plot
+    if len(R) != n_rows or len(Z) != n_cols:
+        if len(R) == n_cols and len(Z) == n_rows:
+            F = F.T
+            n_rows, n_cols = F.shape
+        else:
+            console.print(
+                f"[yellow]Warning: Field shape ({n_rows},{n_cols}) "
+                f"incompatible with coord arrays "
+                f"(R={len(R)}, Z={len(Z)}); using line plot.[/yellow]"
+            )
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.plot(Z * 1e3, F[0, :] if F.shape[0] < F.shape[1] else F[:, 0])
+            ax.set_xlabel("z [mm]")
+            ax.set_ylabel("Field")
+            ax.set_title(title or "Field Monitor")
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout()
+            if output:
+                fig.savefig(output.replace(".txt", ".png"), dpi=150, bbox_inches="tight")
+            if not no_show:
+                plt.show()
+            else:
+                plt.close(fig)
+            return
 
     fig, ax = plt.subplots(figsize=(10, 6))
     im = ax.pcolormesh(Z * 1e3, R * 1e3, F, shading="auto", cmap="RdBu_r")

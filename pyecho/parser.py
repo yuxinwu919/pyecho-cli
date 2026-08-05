@@ -643,11 +643,19 @@ class OutputLoader:
         from pyecho.datamodel import MonitorData
 
         data_dir = self._resolve_data_dir()
-        filename = f"Monitor_m{mode}_N{monitor_id}.txt"
+        # ECHO2D produces zero-padded filenames: Monitor_m09_N01.txt
+        # Try zero-padded first, then unpadded (for backward compatibility)
+        filename = f"Monitor_m{mode:02d}_N{monitor_id:02d}.txt"
         filepath = data_dir / filename
         if not filepath.exists():
-            logger.debug("Monitor file %s not found", filename)
-            return None
+            # Fallback: unpadded format (legacy)
+            filename_fb = f"Monitor_m{mode}_N{monitor_id}.txt"
+            filepath_fb = data_dir / filename_fb
+            if filepath_fb.exists():
+                filepath = filepath_fb
+            else:
+                logger.debug("Monitor file %s (or %s) not found", filename, filename_fb)
+                return None
 
         # Parse header and data
         header = _parse_monitor_full(filepath)
