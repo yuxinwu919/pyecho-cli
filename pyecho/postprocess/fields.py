@@ -7,7 +7,7 @@ Replicates ECHO2D's field monitor MATLAB scripts:
 
 Field monitors in ECHO2D record electromagnetic field components on
 a 2-D (or 3-D) grid.  This module provides point extraction via 2-D
-interpolation and modal field synthesis for flat geometries.
+interpolation and modal field synthesis for recta (rectangular) geometries.
 
 References
 ----------
@@ -246,7 +246,7 @@ def synthesize_total_field(
 
     Replicates ``PP_CreateTotalField_EzEyBx.m`` exactly.
 
-    In a flat rectangular structure of width *D*, the total field at
+    In a recta (rectangular) structure of width *D*, the total field at
     transverse position *x* for a source at *x0* is::
 
         F_total = (2/D) * Σ_m F_m * sin(k_m*(x0 + D/2)) * sin(k_m*(x + D/2))
@@ -445,3 +445,254 @@ def synthesize_total_field_from_loader(
         n_modes=len(files),
         D=D,
     )
+
+
+# ---------------------------------------------------------------------------
+# Point monitor extraction (replicates PP_FieldMonitor_rect.m / _round.m)
+# ---------------------------------------------------------------------------
+
+def extract_point_monitor(
+    monitor: MonitorData,
+    z: float,
+    r: float,
+    geometry: str = "recta",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract a 1-D field trace at a fixed point (z, r) over all time steps.
+
+    Replicates the MATLAB ``interp2`` loop in ``PP_FieldMonitor_rect.m``
+    and ``PP_FieldMonitor_round.m``.
+
+    For z-type monitors, the lab-frame position is reconstructed as
+    ``z_lab = mesh_pos(i) + Z`` (MATLAB's ``MeshPos+Z`` shift).
+    For s-type monitors, the window is static so ``mesh_pos = 0``.
+
+    In round geometry, the Ep (E_phi) component is stored as Ep×r by
+    ECHO2D.  The extracted value is divided by r to recover the physical
+    Ep field (except at r=0 where Ep=0).  Magnetic field components
+    (Bx/By/Bz) are stored as cB with the same units as E.
+
+    Parameters
+    ----------
+    monitor : MonitorData
+        Parsed field monitor.
+    z : float
+        Fixed longitudinal coordinate [m].
+    r : float
+        Fixed transverse coordinate [m] (radial for round, y for recta).
+    geometry : str
+        ``"round"`` or ``"recta"``.
+
+    Returns
+    -------
+    T : np.ndarray
+        Time (or ct) coordinates [m] for each time step.
+    trace : np.ndarray
+        Extracted field values at (z, r) for each time step.
+    """
+    from scipy.interpolate import RegularGridInterpolator
+
+    F = monitor.F
+    T = monitor.T
+    Z = monitor.Z
+    R = monitor.R
+
+    nt = len(T)
+    trace = np.zeros(nt, dtype=np.float64)
+
+    if F.ndim != 3:
+        raise ValueError(f"Expected 3-D monitor data (nt,nz,nr), got shape {F.shape}")
+
+    # For z-type monitors, reconstruct lab-frame z using mesh position
+    mesh_pos = getattr(monitor, "_mesh_pos", None)
+    if mesh_pos is None:
+        mesh_pos = np.zeros(nt, dtype=np.float64)
+
+    for i in range(nt):
+        z_lab = mesh_pos[i] + Z
+        # MATLAB: FF = -F(i, 1:kr*kz); FF = reshape(FF, kz, kr)'
+        # Note the TRANSPOSE: MATLAB reshape in column-major gives different
+        # ordering. Our F is (nt, nz, nr), so F[i, :, :] directly works.
+        FF = F[i, :, :]  # (nz, nr)
+        interp = RegularGridInterpolator(
+            (z_lab, R), FF, bounds_error=False, fill_value=0.0
+        )
+        trace[i] = float(-interp(np.array([[z, r]]))[0])  # MATLAB negates
+
+    # Round Ep component: ECHO2D stores Ep*r, divide to get physical Ep
+    comp = monitor.field_component.upper()
+    if geometry == "round" and comp == "EP":
+        if abs(r) > 1e-30:
+            trace = trace / r
+        # (at r=0, Ep=0 physically, trace stays 0)
+
+    return T, trace
+
+
+def save_point_monitor(
+    out_path: Path,
+    T: np.ndarray,
+    trace: np.ndarray,
+    component: str = "Ez",
+    geometry: str = "recta",
+) -> None:
+    """Save point monitor trace in MATLAB-compatible ``PointMonitor.txt`` format.
+
+    Two-column ASCII: ``ct [m]   Field/Q [V/m/nC]`` (same as MATLAB output).
+
+    Parameters
+    ----------
+    out_path : Path
+        Output file path.
+    T : np.ndarray
+        Time coordinates [s or m].
+    trace : np.ndarray
+        Field values.
+    component : str
+        Field component label (e.g. "Ez", "Ep").
+    geometry : str
+        ``"round"`` or ``"recta"``.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    header = f"% PointMonitor: {component} at fixed (z,r)\n% ct [m]  Field/Q [V/m/nC]"
+    data = np.column_stack([T, trace])
+    np.savetxt(str(out_path), data, header=header, fmt="%.8e")
+
+
+# ---------------------------------------------------------------------------
+# Animation (replicates MATLAB mesh + pause loop)
+# ---------------------------------------------------------------------------
+
+def animate_field_monitor(
+    monitor: MonitorData,
+    output: str | None = None,
+    fps: int = 10,
+    geometry: str = "recta",
+) -> None:
+    """Create an animated field monitor visualization.
+
+    Iterates over time steps, plotting a 2-D pseudocolor slice at each
+    step.  For z-type monitors, shows the moving-window position.
+    Supports saving to GIF or MP4.
+
+    Parameters
+    ----------
+    monitor : MonitorData
+        Parsed field monitor (must be 3-D: nt × nz × nr).
+    output : str, optional
+        Save animation to file (``.gif`` or ``.mp4``).
+    fps : int
+        Frames per second for the output animation.
+    geometry : str
+        ``"round"`` or ``"recta"``.  Affects axis labels and units.
+    """
+    import matplotlib
+    matplotlib.use("Agg")  # non-interactive backend for headless animation
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation
+
+    F = monitor.F
+    if F.ndim != 3:
+        raise ValueError(f"Animation requires 3-D monitor, got shape {F.shape}")
+
+    nt, nz, nr = F.shape
+    Z = monitor.Z
+    R = monitor.R
+    mesh_pos = getattr(monitor, "_mesh_pos", np.zeros(nt))
+
+    # Subsample to keep GIF size reasonable (max ~30 frames)
+    step = max(1, nt // 30)
+    frames = list(range(0, nt, step))
+    n_frames = len(frames)
+
+    vmin, vmax = float(np.min(F)), float(np.max(F))
+    comp = monitor.field_component
+    r_label = "r [mm]" if geometry == "round" else "y [mm]"
+    z_label = "z [mm]" if monitor.time_type == "s" else "s [mm]"
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    # pcolormesh: X=z(len=nz), Y=r(len=nr), C needs (nr, nz)
+    im = ax.pcolormesh(Z * 1e3, R * 1e3, F[0, :, :].T,
+                       shading="nearest", cmap="RdBu_r", vmin=vmin, vmax=vmax)
+    fig.colorbar(im, ax=ax, label=f"{comp}")
+    ax.set_xlabel(z_label)
+    ax.set_ylabel(r_label)
+    title = ax.set_title("")
+
+    def update(idx):
+        frame = frames[idx]
+        ax.clear()
+        im2 = ax.pcolormesh(Z * 1e3, R * 1e3, F[frame, :, :].T,
+                            shading="nearest", cmap="RdBu_r", vmin=vmin, vmax=vmax)
+        pos = mesh_pos[frame] if monitor.time_type == "z" else 0.0
+        title = ax.set_title(
+            f"{comp} — frame {frame}/{nt}, "
+            f"ct={monitor.T[frame]*1e3:.1f}mm, "
+            f"z_pos={pos*1e3:.1f}mm"
+        )
+        ax.set_xlabel(z_label)
+        ax.set_ylabel(r_label)
+        return [im2, title]
+
+    ani = FuncAnimation(fig, update, frames=n_frames, interval=1000//fps, blit=False)
+
+    if output:
+        if output.endswith(".gif"):
+            ani.save(output, writer="pillow", fps=fps, dpi=100)
+        elif output.endswith(".mp4"):
+            ani.save(output, writer="ffmpeg", fps=fps, dpi=150)
+        else:
+            output_gif = output.rsplit(".", 1)[0] + ".gif"
+            ani.save(output_gif, writer="pillow", fps=fps, dpi=100)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_field_3d(
+    monitor: MonitorData,
+    time_step: int = 0,
+    output: str | None = None,
+    geometry: str = "recta",
+) -> None:
+    """Plot a 3-D surface of the field monitor at a single time step.
+
+    Uses matplotlib ``plot_surface`` for a mesh-like rendering
+    (replicates MATLAB ``mesh(z, r, F)``).
+
+    Parameters
+    ----------
+    monitor : MonitorData
+        Parsed field monitor.
+    time_step : int
+        Time step index for 3-D data.
+    output : str, optional
+        Save plot to file.
+    geometry : str
+        ``"round"`` or ``"recta"``.
+    """
+    import matplotlib.pyplot as plt
+
+    F = monitor.F
+    if F.ndim != 3:
+        raise ValueError(f"3-D surface requires 3-D monitor, got shape {F.shape}")
+
+    idx = min(time_step, F.shape[0] - 1)
+    F_slice = F[idx, :, :]
+    Z, R = np.meshgrid(monitor.Z * 1e3, monitor.R * 1e3, indexing="ij")
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection="3d")
+    surf = ax.plot_surface(Z, R, F_slice, cmap="RdBu_r", linewidth=0, antialiased=True)
+    fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label=monitor.field_component)
+    ax.set_xlabel("z [mm]" if monitor.time_type == "s" else "s [mm]")
+    r_label = "r [mm]" if geometry == "round" else "y [mm]"
+    ax.set_ylabel(r_label)
+    ax.set_zlabel(monitor.field_component)
+    ax.set_title(f"{monitor.field_component} — t={monitor.T[idx]*1e3:.1f}mm")
+    fig.tight_layout()
+
+    if output:
+        fig.savefig(output, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()

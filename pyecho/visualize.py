@@ -591,7 +591,7 @@ def plot_wake_modes(
 ) -> tuple["plt.Figure", "plt.Axes"]:
     """Plot each Fourier mode's wake contribution on the same 2D axes.
 
-    For rectangular (flat) geometry, each odd mode m=1,3,5,... is
+    For recta (rectangular) geometry, each odd mode m=1,3,5,... is
     drawn as a different coloured line.  The bunch profile from
     ``Iz0.txt`` is optionally overlaid (dashed curve) for reference.
 

@@ -2232,7 +2232,7 @@ def postprocess_wake(
     ] = None,
     geometry: Annotated[
         Optional[str],
-        typer.Option("--geometry", "-g", help="Geometry type: round, flat (auto-detected if omitted)"),
+        typer.Option("--geometry", "-g", help="Geometry type: round, recta (auto-detected if omitted)"),
     ] = None,
     output: Annotated[
         Optional[str],
@@ -2419,8 +2419,24 @@ def postprocess_field(
     ] = None,
     plot: Annotated[
         bool,
-        typer.Option("--plot", "-p", help="Plot the field"),
+        typer.Option("--plot", "-p", help="Plot as 2-D pseudocolor"),
     ] = False,
+    plot_3d: Annotated[
+        bool,
+        typer.Option("--plot-3d", help="Plot as 3-D surface (replicates MATLAB mesh)"),
+    ] = False,
+    animate: Annotated[
+        Optional[str],
+        typer.Option("--animate", help="Animate time series, save to .gif/.mp4"),
+    ] = None,
+    fps: Annotated[
+        int,
+        typer.Option("--fps", help="Frames per second for animation"),
+    ] = 10,
+    geometry: Annotated[
+        str,
+        typer.Option("--geometry", "-g", help="Geometry type: round, recta (for Ep*r handling)"),
+    ] = "recta",
     no_show: Annotated[
         bool,
         typer.Option("--no-show", help="Do not display plot window"),
@@ -2428,16 +2444,18 @@ def postprocess_field(
 ) -> None:
     """Post-process field monitor data.
 
-    Loads ECHO2D field monitor files (Monitor_mXX_NYY.txt) and extracts
-    field components at specific points, or synthesizes the total field
-    from modal components for flat geometry.
+    Supports both recta (rectangular) and round geometries.  For round
+    geometry Ep (E_phi) is stored as Ep*r by ECHO2D and automatically
+    divided by r to recover the physical field.
 
     \\b
     Examples:
-      echo2d postprocess field . --list                 # list monitors
-      echo2d postprocess field . -m 1 -n 1 -c Ez        # load mode 1, monitor 1, Ez
-      echo2d postprocess field . -m 0 -n 1 --point-z 0.05 --point-r 0.01 --plot
-      echo2d postprocess field . --synthesize -c Ez -o total_field.txt
+      echo2d postprocess field . --list                       # list monitors
+      echo2d postprocess field . -m 1 -n 1 -c Ez              # load & show info
+      echo2d postprocess field . --extract-point "0.03,0.001" # point trace
+      echo2d postprocess field . --synthesize -c Ez -n 1      # total field
+      echo2d postprocess field . -m 1 -n 1 -c Ez --animate field.gif
+      echo2d postprocess field . -m 0 -n 2 -c Ep -g round --plot-3d
     """
     from pathlib import Path as _Path
     from pyecho.project import resolve_run_dir
@@ -2445,6 +2463,10 @@ def postprocess_field(
     from pyecho.postprocess.fields import (
         process_field_monitor,
         synthesize_total_field_from_loader,
+        extract_point_monitor,
+        save_point_monitor,
+        animate_field_monitor,
+        plot_field_3d,
     )
     import numpy as np
 
@@ -2561,29 +2583,28 @@ def postprocess_field(
 
     # Extract field at specified point
     if point_t is not None or point_z is not None or point_r is not None:
-        result = process_field_monitor(
-            monitor,
-            point_t=point_t,
-            point_z=point_z,
-            point_r=point_r,
-        )
-        field_data = result["field"]
+        z_val = point_z if point_z is not None else 0.0
+        r_val = point_r if point_r is not None else 0.0
+        T, trace = extract_point_monitor(monitor, z=z_val, r=r_val, geometry=geometry)
         console.print(
-            f"[green]✓ Field extracted: "
-            f"min={np.min(field_data):.4e}, max={np.max(field_data):.4e}[/green]"
+            f"[green]✓ Point trace extracted: "
+            f"min={np.min(trace):.4e}, max={np.max(trace):.4e}, "
+            f"points={len(trace)}[/green]"
         )
         if output:
-            # Save extracted trace
-            coords = result["coords"]
-            if coords:
-                data = np.column_stack([coords[0], field_data])
-                np.savetxt(output, data, header="coord  field", fmt="%.8e")
-            else:
-                np.savetxt(output, field_data.reshape(1, -1), fmt="%.8e")
-            console.print(f"  [dim]Saved to {output}[/dim]")
+            save_point_monitor(_Path(output), T, trace, monitor.field_component, geometry)
+            console.print(f"  [dim]PointMonitor saved to {output}[/dim]")
 
-    # Plot
-    if plot:
+    # --animate
+    if animate is not None:
+        animate_field_monitor(monitor, output=animate, fps=fps, geometry=geometry)
+        console.print(f"[green]✓ Animation saved to {animate}[/green]")
+        return
+
+    # Plot: 3-D surface or 2-D slice
+    if plot_3d:
+        plot_field_3d(monitor, time_step=0, output=output, geometry=geometry)
+    elif plot:
         _plot_monitor_slice(monitor, title=f"{monitor.field_component} — m{mode}_N{monitor_id}",
                            output=output, no_show=no_show)
 
@@ -3325,6 +3346,22 @@ def visualize_field(
         Optional[str],
         typer.Option("--output", "-o", help="Save plot to file"),
     ] = None,
+    animate: Annotated[
+        Optional[str],
+        typer.Option("--animate", help="Animate time series, save to .gif/.mp4"),
+    ] = None,
+    fps: Annotated[
+        int,
+        typer.Option("--fps", help="Frames per second for animation"),
+    ] = 10,
+    plot_3d: Annotated[
+        bool,
+        typer.Option("--3d", help="Use 3-D surface plot (MATLAB mesh style)"),
+    ] = False,
+    geometry: Annotated[
+        str,
+        typer.Option("--geometry", "-g", help="Geometry type: round, recta"),
+    ] = "recta",
     no_show: Annotated[
         bool,
         typer.Option("--no-show", help="Do not display plot window"),
@@ -3332,16 +3369,21 @@ def visualize_field(
 ) -> None:
     """Visualize field monitor data.
 
-    Displays a 2-D pseudocolor plot of the field from an ECHO2D
-    field monitor file (Monitor_mXX_NYY.txt).  For 3-D monitors
-    (time × z × r), a time slice is selected with --time-step.
+    Supports 2-D pseudocolor, 3-D surface, and time-series animation.
+    For round geometry, Ep (E_phi) is stored as Ep*r and handled correctly.
 
     \\b
     Examples:
-      echo2d visualize field . -m 1 -n 1 -t 0
-      echo2d visualize field . -m 0 -n 1 --component Ez -o field.png
+      echo2d visualize field . -m 1 -n 1 -t 0              # 2-D slice
+      echo2d visualize field . -m 1 -n 1 --3d -o field.png  # 3-D surface
+      echo2d visualize field . -m 1 -n 1 --animate anim.gif # animation
+      echo2d visualize field . -m 0 -n 2 -c Ep -g round --3d
     """
     from pyecho.parser import OutputLoader
+    from pyecho.postprocess.fields import (
+        animate_field_monitor,
+        plot_field_3d,
+    )
     from pyecho.visualize import plot_field
     import matplotlib.pyplot as plt
 
@@ -3362,18 +3404,26 @@ def visualize_field(
             f"(t = {monitor.T[time_step]:.3e})[/dim]"
         )
 
+    # --animate
+    if animate is not None:
+        animate_field_monitor(monitor, output=animate, fps=fps, geometry=geometry)
+        console.print(f"[green]✓ Animation saved to {animate}[/green]")
+        return
+
+    # --3d or 2D
     try:
-        fig, ax = plot_field(monitor, time_step=time_step)
+        if plot_3d:
+            plot_field_3d(monitor, time_step=time_step, output=output, geometry=geometry)
+        else:
+            fig, ax = plot_field(monitor, time_step=time_step)
+            if output:
+                fig.savefig(output, dpi=150, bbox_inches="tight")
+                console.print(f"[green]Plot saved to {output}[/green]")
+            if not no_show:
+                plt.show()
     except Exception as exc:
         console.print(f"[red]Error plotting field: {exc}[/red]")
         raise typer.Exit(1)
-
-    if output:
-        fig.savefig(output, dpi=150, bbox_inches="tight")
-        console.print(f"[green]Plot saved to {output}[/green]")
-
-    if not no_show:
-        plt.show()
 
 
 # ===================================================================
@@ -4668,7 +4718,7 @@ def _save_wake_round_data(
 
 
 def _save_wake_flat(result: Any, out_dir: Path) -> None:
-    """Save flat/recta wake result to disk.
+    """Save recta (rectangular) wake result to disk.
 
     Writes
     ------

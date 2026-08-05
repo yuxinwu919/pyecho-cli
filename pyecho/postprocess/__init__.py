@@ -1,13 +1,13 @@
 """Post-processing subpackage for ECHO2D simulation results.
 
 Provides a unified interface for all post-processing tasks:
-wake potential computation (round & flat geometries), field monitor
+wake potential computation (round & recta geometries), field monitor
 analysis, and particle phase-space processing.
 
 Submodules
 ----------
 wakes/round : Round (axisymmetric) geometry wake processing
-wakes/flat  : Flat (rectangular) geometry wake processing
+wakes/flat  : Recta (rectangular) geometry wake processing
 fields      : Field monitor extraction & synthesis
 particles   : Particle loading, statistics & format conversion
 core        : :class:`PostProcessor` — high-level dispatcher

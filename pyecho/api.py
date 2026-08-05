@@ -53,7 +53,7 @@ def quick_simulate(
     modes : list[int], optional
         Azimuthal modes to compute.  Defaults to ``[0]``.
     geometry_type : str
-        ``"round"`` or ``"flat"``.
+        ``"round"`` or ``"recta"``.
     step_y : float, optional
         Transverse mesh step [m].  Defaults to ``sigma / 5``.
     step_z : float, optional
@@ -151,7 +151,7 @@ def quick_postprocess(
     output_dir : str
         Path to the ECHO2D output directory.
     geometry : str, optional
-        ``"round"`` or ``"flat"``.  Auto-detected if ``None``.
+        ``"round"`` or ``"recta"``.  Auto-detected if ``None``.
     **kwargs
         Additional arguments passed to the post-processor.
 
