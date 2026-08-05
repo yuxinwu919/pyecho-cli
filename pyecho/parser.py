@@ -996,10 +996,13 @@ def _parse_monitor_full(filepath: Path) -> dict:
         if s.startswith("%"):
             s_clean = s.lstrip("%").strip().lower()
 
-            # Detect field component
-            for comp in ("ex", "ey", "ez", "hx", "hy", "hz"):
+            # Detect field component (including Ep = E_phi for round geometry)
+            for comp in ("ep", "ex", "ey", "ez", "hx", "hy", "hz"):
                 if comp in s_clean:
-                    header["field_component"] = comp.capitalize()
+                    if comp == "ep":
+                        header["field_component"] = "Ep"
+                    else:
+                        header["field_component"] = comp.capitalize()
                     break
 
             # Detect time type
@@ -1039,7 +1042,7 @@ def _parse_monitor_full(filepath: Path) -> dict:
 
     # Also parse from filename
     fname = filepath.stem
-    for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+    for comp in ("Ep", "Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
         if f"_{comp}" in fname or f"_{comp.lower()}" in fname:
             header.setdefault("field_component", comp)
             break
