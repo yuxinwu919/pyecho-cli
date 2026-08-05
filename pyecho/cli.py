@@ -25,7 +25,6 @@ import time
 from pathlib import Path
 from typing import Annotated, Optional
 
-import numpy as np
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -2531,7 +2530,7 @@ def postprocess_field(
             total_dir = _Path(total)
             total_dir.mkdir(parents=True, exist_ok=True)
             out_file = total_dir / f"MonitorTotal_N{monitor_id:02d}.txt"
-            _save_monitor_total(out_file, total_field, component, monitor.time_type if monitor else "z", D or 0.05,
+            _save_monitor_total(out_file, total_field, component, "z", D or 0.05,
                                T=None, Z=None, R=None)
             console.print(f"  [dim]MonitorTotal saved to {out_file}[/dim]")
 

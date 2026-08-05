@@ -21,7 +21,6 @@ import platform
 import re
 import shutil
 import subprocess
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +35,6 @@ from pyecho.datamodel import (
 from pyecho._version import __version__
 from pyecho.errors import (
     ExecutableNotFoundError,
-    RunnerError,
     SimulationCrashedError,
     SimulationTimeoutError,
 )

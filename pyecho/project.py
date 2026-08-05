@@ -39,10 +39,8 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -667,36 +665,6 @@ def _detect_geometry_type_from_run(run_dir: Path) -> str:
         return meta.geometry_type
     except Exception:
         return "round"
-    """Scan a workspace directory for ECHO2D projects.
-
-    A directory is considered a project if it contains a
-    ``.echo2d.yaml`` file.
-
-    Parameters
-    ----------
-    workspace : str or Path, optional
-        Directory to scan.  If ``None``, uses the default workspace.
-
-    Returns
-    -------
-    dict[str, ProjectManifest]
-        Mapping of project name → manifest for all found projects.
-    """
-    root = Path(workspace).expanduser().resolve() if workspace else _get_workspace_root()
-    projects: dict[str, ProjectManifest] = {}
-
-    if not root.is_dir():
-        return projects
-
-    for entry in sorted(root.iterdir()):
-        if entry.is_dir() and (entry / MANIFEST_FILE).is_file():
-            try:
-                manifest = load_project(entry)
-                projects[manifest.name] = manifest
-            except Exception as exc:
-                logger.warning("Skipping %s: %s", entry.name, exc)
-
-    return projects
 
 
 def is_echo2d_project(directory: str | Path) -> bool:

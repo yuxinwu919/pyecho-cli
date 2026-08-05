@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pyecho.datamodel import SimulationResult, WakeResult, FlatWakeResult
+    from pyecho.datamodel import SimulationResult, RoundWakeResult, FlatWakeResult
 
 logger = logging.getLogger(__name__)
 
