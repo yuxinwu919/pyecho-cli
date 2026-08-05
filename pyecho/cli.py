@@ -3561,19 +3561,66 @@ def compare_projects(
         Workaround for now:
         Use ``echo2d compare runs <dir1> <dir2>`` with explicit paths.
     """
-    console.print(
-        Panel.fit(
-            "[bold yellow]⏳  Planned feature (Phase 3)[/bold yellow]\n\n"
-            "Cross-project comparison is not yet implemented.\n\n"
-            "The project framework (workspace, manifests, run tracking)\n"
-            "is ready — this is the next step.\n\n"
-            "Workaround:\n"
-            "  [cyan]echo2d compare runs[/cyan] "
-            "[dim]path/to/projA/runs/001/ path/to/projB/runs/001/[/dim]\n\n"
-            "Expected: [cyan]echo2d v0.3.0[/cyan]",
-            title="Compare Projects",
-        )
-    )
+    from pyecho.project import _get_workspace_root, scan_workspace, list_runs
+    from pyecho.api import compare_runs as _cr
+    from pyecho.visualize import plot_comparison
+
+    ws = _get_workspace_root()
+
+    # Resolve project dirs
+    def _find_latest_run(proj_name: str, run_id: str | None) -> Path | None:
+        proj_dir = ws / proj_name
+        if not proj_dir.is_dir():
+            return None
+        runs = list_runs(proj_dir)
+        if not runs:
+            return None
+        if run_id:
+            for r in runs:
+                if r.id == run_id:
+                    return proj_dir / "runs" / r.dir_name
+        # Latest completed
+        for r in reversed(runs):
+            d = proj_dir / "runs" / r.dir_name
+            if d.is_dir():
+                return d
+        return None
+
+    dir_a = _find_latest_run(project_a, run_a)
+    dir_b = _find_latest_run(project_b, run_b)
+
+    if dir_a is None:
+        console.print(f"[red]Error: No runs found for project '{project_a}'[/red]")
+        raise typer.Exit(1)
+    if dir_b is None:
+        console.print(f"[red]Error: No runs found for project '{project_b}'[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"  [dim]A: {dir_a}[/dim]")
+    console.print(f"  [dim]B: {dir_b}[/dim]")
+
+    try:
+        comp = _cr([str(dir_a), str(dir_b)], labels=[project_a, project_b], mode=mode)
+    except Exception as exc:
+        console.print(f"[red]Error: Comparison failed: {exc}[/red]")
+        raise typer.Exit(1)
+
+    # Display loss table
+    table = Table(title=f"Mode {mode} Comparison")
+    table.add_column("Project", style="cyan")
+    table.add_column("Loss Factor [V/pC]", style="green")
+    for lbl, loss in zip(comp["labels"], comp["losses"]):
+        table.add_row(lbl, f"{loss:.6f}")
+    console.print(table)
+
+    # Plot
+    results = [(lbl, comp["s"], w) for lbl, w in zip(comp["labels"], comp["W_list"])]
+    fig, ax = plot_comparison(results, title=f"Mode {mode} Wake Comparison: {project_a} vs {project_b}")
+    if output:
+        fig.savefig(output, dpi=150, bbox_inches="tight")
+        console.print(f"[green]Plot saved to {output}[/green]")
+    import matplotlib.pyplot as plt
+    plt.show()
 
 
 @compare_app.command("runs")
