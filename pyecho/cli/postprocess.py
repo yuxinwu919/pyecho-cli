@@ -34,6 +34,20 @@ from pyecho.cli._helpers import (
 # Postprocess commands
 # ---------------------------------------------------------------------------
 
+def _fmt_factor(value: float | None, fmt: str = ".6f") -> str:
+    """Format and color-code a loss/kick factor for table display.
+
+    Green = physical (positive) value; yellow = warning (zero, negative,
+    or missing).
+    """
+    if value is None:
+        return "[yellow]—[/yellow]"
+    text = format(value, fmt)
+    if value > 0:
+        return f"[green]{text}[/green]"
+    return f"[yellow]{text}[/yellow]"
+
+
 @postprocess_app.command("wake")
 def postprocess_wake(
     output_dir: Annotated[str, typer.Argument(help="Output directory or run ID (e.g. 001)")],
@@ -85,14 +99,17 @@ def postprocess_wake(
     wake_out.mkdir(parents=True, exist_ok=True)
 
     if isinstance(result, RoundWakeResult):
-        console.print(
-            Panel.fit(
-                f"[bold green]✓ Wake processed[/bold green]\n"
-                f"  Loss_long:  [cyan]{result.loss_long:.6f} V/pC[/cyan]\n"
-                f"  Peak:       [cyan]{result.peak:.4f} V/pC[/cyan]",
-                title="Round Wake Result",
-            )
-        )
+        summary_table = Table(title="✓ Wake processed — Round Wake Result")
+        summary_table.add_column("Quantity")
+        summary_table.add_column("Value", justify="right")
+        summary_table.add_column("Units")
+        summary_table.add_row("Loss (longitudinal)", _fmt_factor(result.loss_long), "V/pC")
+        summary_table.add_row("Peak", _fmt_factor(result.peak, ".4f"), "V/pC")
+        summary_table.add_row("RMS spread", _fmt_factor(result.rms_spread, ".4f"), "V/pC")
+        if result.Wdipole is not None:
+            kd = result.kick_dipole if result.kick_dipole is not None else 0.0
+            summary_table.add_row("Kick (dipole)", _fmt_factor(kd, ".4f"), "V/pC/m")
+        console.print(summary_table)
         # Save monopole (m=0) — longitudinal wake
         _save_wake_round_data(result.s, result.Wlong, "monopole", "V/pC", wake_out / "wake_monopole.txt")
         summary_lines = [
@@ -118,15 +135,14 @@ def postprocess_wake(
         # Update run manifest
         _try_update_processed_manifest(out_path, loss_long=result.loss_long, peak=result.peak)
     elif isinstance(result, FlatWakeResult):
-        console.print(
-            Panel.fit(
-                f"[bold green]✓ Wake processed (rectangular)[/bold green]\n"
-                f"  Longitudinal loss: [cyan]{result.loss_long:.6f} V/pC[/cyan]\n"
-                f"  Quadrupole kick:   [cyan]{result.kick_quad:.6f} V/pC/mm[/cyan]\n"
-                f"  Dipole kick:       [cyan]{result.kick_dipole:.6f} V/pC/mm[/cyan]",
-                title="Rectangular Wake Result",
-            )
-        )
+        summary_table = Table(title="✓ Wake processed — Rectangular Wake Result")
+        summary_table.add_column("Quantity")
+        summary_table.add_column("Value", justify="right")
+        summary_table.add_column("Units")
+        summary_table.add_row("Loss (longitudinal)", _fmt_factor(result.loss_long), "V/pC")
+        summary_table.add_row("Kick (quadrupole)", _fmt_factor(result.kick_quad), "V/pC/mm")
+        summary_table.add_row("Kick (dipole)", _fmt_factor(result.kick_dipole), "V/pC/mm")
+        console.print(summary_table)
         # Save processed data
         _save_wake_flat(result, wake_out)
         # Update run manifest

@@ -42,7 +42,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pyecho.errors import PyEchoError
+from pyecho.errors import PreprocessError
 from pyecho.mathlib import c, e, me
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,7 @@ class ASTRAConverter:
 
         Raises
         ------
-        PyEchoError
+        PreprocessError
             If the ASTRA file cannot be read or has insufficient columns.
 
         Notes
@@ -108,7 +108,9 @@ class ASTRAConverter:
         echo_file = Path(echo_file).resolve()
 
         if not astra_file.is_file():
-            raise PyEchoError(f"ASTRA file not found: {astra_file}")
+            raise PreprocessError(
+                f"ASTRA file not found: {astra_file}", input_file=astra_file
+            )
 
         logger.info("Converting ASTRA → ECHO2D: %s → %s",
                      astra_file.name, echo_file.name)
@@ -117,17 +119,19 @@ class ASTRAConverter:
         try:
             data = np.loadtxt(astra_file, dtype=np.float64)
         except Exception as exc:
-            raise PyEchoError(
-                f"Failed to read ASTRA file {astra_file}: {exc}"
+            raise PreprocessError(
+                f"Failed to read ASTRA file {astra_file}: {exc}",
+                input_file=astra_file,
             ) from exc
 
         if data.ndim == 1:
             data = data.reshape(1, -1)
         n_cols = data.shape[1]
         if n_cols < 6:
-            raise PyEchoError(
+            raise PreprocessError(
                 f"ASTRA file {astra_file} has {n_cols} columns; "
-                "expected at least 6 (x, y, z, px, py, pz)."
+                "expected at least 6 (x, y, z, px, py, pz).",
+                input_file=astra_file,
             )
 
         # Extract columns
@@ -183,14 +187,16 @@ class ASTRAConverter:
 
         Raises
         ------
-        PyEchoError
+        PreprocessError
             If the ECHO2D file cannot be read.
         """
         echo_file = Path(echo_file).resolve()
         astra_file = Path(astra_file).resolve()
 
         if not echo_file.is_file():
-            raise PyEchoError(f"ECHO2D file not found: {echo_file}")
+            raise PreprocessError(
+                f"ECHO2D file not found: {echo_file}", input_file=echo_file
+            )
 
         logger.info("Converting ECHO2D → ASTRA: %s → %s",
                      echo_file.name, astra_file.name)
@@ -198,8 +204,9 @@ class ASTRAConverter:
         try:
             data = np.loadtxt(echo_file, dtype=np.float64)
         except Exception as exc:
-            raise PyEchoError(
-                f"Failed to read ECHO2D file {echo_file}: {exc}"
+            raise PreprocessError(
+                f"Failed to read ECHO2D file {echo_file}: {exc}",
+                input_file=echo_file,
             ) from exc
 
         if data.ndim == 1:
@@ -280,17 +287,17 @@ def create_beam_profile(
 
     Raises
     ------
-    PyEchoError
+    PreprocessError
         If the arrays have different lengths or *s_vals* are not
         monotonically increasing.
     """
     if len(s_vals) != len(rho_vals):
-        raise PyEchoError(
+        raise PreprocessError(
             f"s_vals and rho_vals must have same length, "
             f"got {len(s_vals)} vs {len(rho_vals)}"
         )
     if len(s_vals) < 2:
-        raise PyEchoError("Need at least 2 data points for beam profile")
+        raise PreprocessError("Need at least 2 data points for beam profile")
 
     output_file = Path(output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -323,17 +330,22 @@ def parse_beam_profile(filepath: str | Path) -> tuple[np.ndarray, np.ndarray]:
 
     Raises
     ------
-    PyEchoError
+    PreprocessError
         If the file cannot be parsed.
     """
     filepath = Path(filepath)
     if not filepath.exists():
-        raise PyEchoError(f"Beam profile file not found: {filepath}")
+        raise PreprocessError(
+            f"Beam profile file not found: {filepath}", input_file=filepath
+        )
 
     try:
         lines = filepath.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise PyEchoError(f"Cannot read beam profile {filepath}: {exc}") from exc
+        raise PreprocessError(
+            f"Cannot read beam profile {filepath}: {exc}",
+            input_file=filepath,
+        ) from exc
 
     s_vals: list[float] = []
     rho_vals: list[float] = []
@@ -352,8 +364,9 @@ def parse_beam_profile(filepath: str | Path) -> tuple[np.ndarray, np.ndarray]:
                 continue  # skip non-numeric lines
 
     if len(s_vals) < 2:
-        raise PyEchoError(
-            f"Beam profile {filepath} has fewer than 2 valid data points"
+        raise PreprocessError(
+            f"Beam profile {filepath} has fewer than 2 valid data points",
+            input_file=filepath,
         )
 
     return np.array(s_vals, dtype=np.float64), np.array(rho_vals, dtype=np.float64)

@@ -68,7 +68,7 @@ from typing import Any
 import numpy as np
 
 from pyecho._version import __version__
-from pyecho.errors import PyEchoError
+from pyecho.errors import DependencyError, PyEchoError
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +107,10 @@ def export_hdf5(
 
     Raises
     ------
+    DependencyError
+        If the ``h5py`` library is not installed.
     PyEchoError
-        If the HDF5 library is not available or the write fails.
+        If the write fails.
 
     Examples
     --------
@@ -118,9 +120,11 @@ def export_hdf5(
     try:
         import h5py
     except ImportError as exc:
-        raise PyEchoError(
+        raise DependencyError(
             "h5py is required for HDF5 export. Install it with: "
-            "pip install h5py"
+            "pip install h5py",
+            dependency="h5py",
+            install_hint="pip install h5py",
         ) from exc
 
     output_path = Path(output_path).resolve()
@@ -282,15 +286,19 @@ def load_hdf5(filepath: str | Path) -> dict[str, Any]:
 
     Raises
     ------
+    DependencyError
+        If the ``h5py`` library is not installed.
     PyEchoError
-        If h5py is not installed or the file cannot be read.
+        If the file cannot be read.
     """
     try:
         import h5py
     except ImportError as exc:
-        raise PyEchoError(
+        raise DependencyError(
             "h5py is required for HDF5 import. Install it with: "
-            "pip install h5py"
+            "pip install h5py",
+            dependency="h5py",
+            install_hint="pip install h5py",
         ) from exc
 
     filepath = Path(filepath).resolve()
@@ -446,14 +454,16 @@ def _resolve_result(result_or_dir: Any) -> Any:
     try:
         all_wakes = loader.load_all_wakes()
         for mode_num, wake_data in all_wakes.items():
+            # load_all_wakes() returns tuples (s, W_raw, hr, offset, D, sigma).
+            s_raw, W_raw, hr, offset, D, sigma = wake_data
             result_modes = _MinimalResult()
             result_modes.mode_number = mode_num
-            result_modes.s_raw = wake_data.get("s")
-            result_modes.W_raw = wake_data.get("W_raw")
-            result_modes.hr = wake_data.get("hr", 0.0)
-            result_modes.offset = wake_data.get("offset", 0)
-            result_modes.D = wake_data.get("D", 0.0)
-            result_modes.sigma = wake_data.get("sigma", 0.0)
+            result_modes.s_raw = s_raw
+            result_modes.W_raw = W_raw
+            result_modes.hr = hr
+            result_modes.offset = offset
+            result_modes.D = D
+            result_modes.sigma = sigma
             result_modes.wake_processed = None
             modes[mode_num] = result_modes
 

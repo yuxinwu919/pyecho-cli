@@ -46,6 +46,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from pyecho._version import __version__
+from pyecho.errors import ConfigError, ProjectError
 
 logger = logging.getLogger(__name__)
 
@@ -212,23 +213,26 @@ def load_project(project_dir: str | Path) -> ProjectManifest:
 
     Raises
     ------
-    FileNotFoundError
-        If the manifest file does not exist.
-    ValueError
-        If the file is malformed.
+    ProjectError
+        If the manifest file does not exist or is malformed.
     """
     project_dir = Path(project_dir).resolve()
     manifest_path = project_dir / MANIFEST_FILE
     if not manifest_path.is_file():
-        raise FileNotFoundError(
+        raise ProjectError(
             f"No {MANIFEST_FILE} found in {project_dir}. "
-            f"Is this an ECHO2D project?"
+            f"Is this an ECHO2D project?",
+            project_dir=project_dir,
+            manifest_file=manifest_path,
         )
     try:
         data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         return ProjectManifest(**data)
     except yaml.YAMLError as exc:
-        raise ValueError(f"Failed to parse {manifest_path}: {exc}") from exc
+        raise ProjectError(
+            f"Failed to parse {manifest_path}: {exc}",
+            manifest_file=manifest_path,
+        ) from exc
 
 
 def save_project(manifest: ProjectManifest, project_dir: str | Path) -> Path:
@@ -266,12 +270,16 @@ def load_run_meta(run_dir: str | Path) -> RunManifest:
     run_dir = Path(run_dir).resolve()
     meta_path = run_dir / RUN_META_FILE
     if not meta_path.is_file():
-        raise FileNotFoundError(f"No {RUN_META_FILE} in {run_dir}")
+        raise ProjectError(
+            f"No {RUN_META_FILE} in {run_dir}", project_dir=run_dir
+        )
     try:
         data = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
         return RunManifest(**data)
     except yaml.YAMLError as exc:
-        raise ValueError(f"Failed to parse {meta_path}: {exc}") from exc
+        raise ProjectError(
+            f"Failed to parse {meta_path}: {exc}", manifest_file=meta_path
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -476,13 +484,19 @@ def create_new_run(
                 source_dir = child
                 break
         if source_dir is None:
-            raise ValueError(f"Run '{from_run}' not found in {project_dir}")
+            raise ProjectError(
+                f"Run '{from_run}' not found in {project_dir}",
+                project_dir=project_dir,
+            )
         gt = _detect_geometry_type_from_run(source_dir)
     else:
         # Copy from latest run
         latest = manifest.latest_run
         if latest is None:
-            raise ValueError(f"No existing runs in {project_dir}. Use --template to create the first run.")
+            raise ProjectError(
+                f"No existing runs in {project_dir}. Use --template to create the first run.",
+                project_dir=project_dir,
+            )
         # Find the actual directory
         for child in runs_dir.iterdir():
             if child.is_dir() and child.name.startswith(latest.id):
@@ -705,7 +719,9 @@ def migrate_project(
     """
     d = Path(directory).resolve()
     if not is_legacy_project(d):
-        raise ValueError(f"{d} is not a recognisable legacy project")
+        raise ProjectError(
+            f"{d} is not a recognisable legacy project", project_dir=d
+        )
 
     # Detect geometry type from existing output dirs
     has_round = (d / "round").is_dir()
@@ -876,7 +892,7 @@ def _write_stub_input(run_dir: Path, template: str, geometry_type: str) -> None:
 
     try:
         params = ECHO2DParams.from_template(template)
-    except ValueError:
+    except (ValueError, ConfigError):
         # Template not found — write a minimal stub
         geo_file = "geometry.txt"
         if geometry_type == "recta":

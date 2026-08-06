@@ -168,6 +168,21 @@ def _show_welcome() -> None:
     import platform as _platform
     import sys as _sys
 
+    # Count projects found in the workspace (if any).
+    projects_line = ""
+    try:
+        from pyecho.project import _get_workspace_root, scan_workspace
+        ws_root = _get_workspace_root()
+        n_projects = len(scan_workspace(ws_root))
+        if n_projects:
+            projects_line = (
+                "[bold]Workspace:[/bold]\n"
+                f"  [cyan]{n_projects}[/cyan] project(s) found in "
+                f"[dim]{ws_root}[/dim]\n\n"
+            )
+    except Exception:
+        projects_line = ""
+
     console.print(
         Panel.fit(
             "[bold cyan]⚡ ECHO2D[/bold cyan] — Accelerator Wakefield / Impedance Solver\n\n"
@@ -176,6 +191,7 @@ def _show_welcome() -> None:
             "[bold]Tools:[/bold]\n"
             "  [cyan]echo2d[/cyan]          Command-line toolkit (this tool)\n"
             "  [cyan]echo2d-tui[/cyan]      Terminal UI  [dim](coming soon)[/dim]\n\n"
+            f"{projects_line}"
             "[bold]Quick start:[/bold]\n"
             "  [dim]$[/dim] echo2d project init myproj -t round_collimator\n"
             "  [dim]$[/dim] echo2d run start --threads 4\n"

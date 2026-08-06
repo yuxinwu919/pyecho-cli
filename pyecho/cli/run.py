@@ -258,12 +258,12 @@ def run_start(
                         pct = min(float(update.get("percent", 0)), 100)
                         pbar.update(
                             task, completed=pct,
-                            description="",
+                            description=update.get("message", "")[:40],
                         )
                     except StopIteration as exc:
                         result = exc.value
                         break
-                pbar.update(task, completed=100)
+                pbar.update(task, completed=100, description="Simulation complete")
 
             elapsed = time.time() - t_start
 

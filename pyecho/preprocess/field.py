@@ -27,7 +27,7 @@ from typing import Any
 
 import numpy as np
 
-from pyecho.errors import PyEchoError
+from pyecho.errors import PreprocessError
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ class InitialFieldGenerator:
 
         Raises
         ------
-        PyEchoError
+        PreprocessError
             If the particle file cannot be read or the solver fails.
 
         Notes
@@ -130,7 +130,10 @@ class InitialFieldGenerator:
         """
         particle_file = Path(particle_file).resolve()
         if not particle_file.is_file():
-            raise PyEchoError(f"Particle file not found: {particle_file}")
+            raise PreprocessError(
+                f"Particle file not found: {particle_file}",
+                input_file=particle_file,
+            )
 
         logger.info(
             "Generating initial field: R=%.3e m, mesh=%d, hz=%.3e, hy=%.3e",
@@ -214,16 +217,18 @@ class InitialFieldGenerator:
         try:
             data = np.loadtxt(filepath, dtype=np.float64)
         except Exception as exc:
-            raise PyEchoError(
-                f"Failed to read particle file {filepath}: {exc}"
+            raise PreprocessError(
+                f"Failed to read particle file {filepath}: {exc}",
+                input_file=filepath,
             ) from exc
 
         if data.ndim == 1:
             data = data.reshape(1, -1)
         if data.shape[1] < 6:
-            raise PyEchoError(
+            raise PreprocessError(
                 f"Particle file {filepath} has {data.shape[1]} columns; "
-                "expected at least 6 (z, y, x', y', Pz, weight)."
+                "expected at least 6 (z, y, x', y', Pz, weight).",
+                input_file=filepath,
             )
         return data
 

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from pyecho.errors import PostProcessError
+from pyecho.errors import MissingOutputError, PostProcessError
 
 if TYPE_CHECKING:
     from pyecho.datamodel import WakeResult, FlatWakeResult, SimulationResult
@@ -289,9 +289,11 @@ class PostProcessor:
 
         # --- Neither available → error ----------------------------------------
         if magn_dir is None and elec_dir is None:
-            raise PostProcessError(
+            raise MissingOutputError(
                 "No magn/ or elec/ directory found. "
-                "Recta geometry requires at least one symmetry condition output."
+                "Recta geometry requires at least one symmetry condition output.",
+                data_dir=self.loader.dir,
+                missing_files=["magn/", "elec/"],
             )
 
         # --- Auto-detect n_modes -----------------------------------------------
@@ -452,8 +454,10 @@ class PostProcessor:
         if not magn_dir.is_dir():
             magn_dir = self.loader._resolve_data_dir()
         if not elec_dir.is_dir():
-            raise PostProcessError(
-                "process_off_axis requires elec/ directory with wakeL files."
+            raise MissingOutputError(
+                "process_off_axis requires elec/ directory with wakeL files.",
+                data_dir=self.loader.dir,
+                missing_files=["elec/"],
             )
 
         from pyecho.postprocess.wakes.flat import (
@@ -498,8 +502,9 @@ class PostProcessor:
         """
         monitor = self.loader.load_monitor(mode=mode, monitor_id=monitor_id)
         if monitor is None:
-            raise PostProcessError(
-                f"Monitor m{mode}_N{monitor_id} not found."
+            raise MissingOutputError(
+                f"Monitor m{mode}_N{monitor_id} not found.",
+                data_dir=self.loader.dir,
             )
 
         from pyecho.postprocess.fields import process_field_monitor
@@ -577,7 +582,11 @@ class PostProcessor:
         data_dir = self.loader._resolve_data_dir()
         filepath = data_dir / "particles.out"
         if not filepath.exists():
-            raise PostProcessError(f"particles.out not found in {data_dir}")
+            raise MissingOutputError(
+                f"particles.out not found in {data_dir}",
+                data_dir=data_dir,
+                missing_files=["particles.out"],
+            )
 
         particles = load_echo_particles(filepath)
         stats = compute_particle_statistics(particles)
@@ -610,7 +619,11 @@ class PostProcessor:
         data_dir = self.loader._resolve_data_dir()
         echo_file = data_dir / "particles.out"
         if not echo_file.exists():
-            raise PostProcessError(f"particles.out not found in {data_dir}")
+            raise MissingOutputError(
+                f"particles.out not found in {data_dir}",
+                data_dir=data_dir,
+                missing_files=["particles.out"],
+            )
 
         return convert_echo_to_astra(
             echo_file=echo_file,
@@ -638,12 +651,13 @@ class PostProcessor:
 
         Raises
         ------
-        PostProcessError
-            If no output data is found.
+        MissingOutputError
+            If no ECHO2D output data is found.
         """
         if not self.loader.has_output():
-            raise PostProcessError(
-                f"No ECHO2D output files found in {self.loader.dir}"
+            raise MissingOutputError(
+                f"No ECHO2D output files found in {self.loader.dir}",
+                data_dir=self.loader.dir,
             )
 
         results: dict[str, Any] = {

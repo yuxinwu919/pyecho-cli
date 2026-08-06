@@ -12,7 +12,7 @@ from rich.table import Table
 from rich.tree import Tree
 
 from pyecho._version import __version__
-from pyecho.cli import app, console, _get_template_names
+from pyecho.cli import app, console, _show_welcome, _get_template_names
 
 # ---------------------------------------------------------------------------
 # Global callback

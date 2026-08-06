@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from pyecho.cli import config_app, console
+from pyecho.errors import ConfigError
 
 @config_app.command("generate")
 def config_generate(
@@ -62,7 +63,7 @@ def config_generate(
 
     try:
         params = ECHO2DParams.from_template(template, **overrides)
-    except ValueError as exc:
+    except (ValueError, ConfigError) as exc:
         console.print(f"[red]Error: {exc}[/red]")
         console.print(f"[dim]Available templates: {ECHO2DParams.list_templates()}[/dim]")
         raise typer.Exit(1)

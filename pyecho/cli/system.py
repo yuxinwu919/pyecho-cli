@@ -183,6 +183,16 @@ def system_check(
 
     console.print(table)
 
+    # Summary: satisfied / total dependency ratio
+    deps_satisfied = len(_DEPS) - len(missing_imports)
+    deps_total = len(_DEPS)
+    summary_color = "bold green" if not missing_imports else "bold yellow"
+    console.print(
+        f"[bold]Summary:[/bold] "
+        f"[{summary_color}]{deps_satisfied}/{deps_total}[/{summary_color}] "
+        f"dependencies satisfied"
+    )
+
     # ------------------------------------------------------------------
     # 2. ECHO2D solver binary
     # ------------------------------------------------------------------

@@ -26,6 +26,8 @@ from pydantic import (
     model_validator,
 )
 
+from pyecho.errors import ConfigError
+
 
 # ---------------------------------------------------------------------------
 # Field monitor sub-model
@@ -67,7 +69,11 @@ class FieldMonitorConfig(BaseModel):
     def _validate_component(cls, v: str) -> str:
         allowed = {"Ex", "Ey", "Ez", "Hx", "Hy", "Hz"}
         if v not in allowed:
-            raise ValueError(f"Field component must be one of {allowed}, got {v!r}")
+            raise ConfigError(
+                f"Field component must be one of {allowed}, got {v!r}",
+                field="component",
+                value=v,
+            )
         return v
 
 
@@ -250,7 +256,9 @@ class ECHO2DParams(BaseModel):
             return [int(x) for x in v.split()]
         if isinstance(v, list):
             return [int(x) for x in v]
-        raise ValueError(f"Cannot parse Modes from {v!r}")
+        raise ConfigError(
+            f"Cannot parse Modes from {v!r}", field="Modes", value=v
+        )
 
     @field_validator("WakeMonitor", "BeamMonitor", mode="before")
     @classmethod
@@ -265,7 +273,7 @@ class ECHO2DParams(BaseModel):
             return [int(x) for x in stripped.split()]
         if isinstance(v, list):
             return [int(x) for x in v]
-        raise ValueError(f"Cannot parse monitor list from {v!r}")
+        raise ConfigError(f"Cannot parse monitor list from {v!r}", value=v)
 
     @model_validator(mode="after")
     def _validate_recta_modes(self) -> "ECHO2DParams":
@@ -293,8 +301,10 @@ class ECHO2DParams(BaseModel):
     def _validate_width(self) -> "ECHO2DParams":
         """Width must be > 0 for recta geometry."""
         if self.GeometryType == "recta" and self.Width <= 0:
-            raise ValueError(
-                f"Width must be > 0 for recta geometry, got {self.Width}"
+            raise ConfigError(
+                f"Width must be > 0 for recta geometry, got {self.Width}",
+                field="Width",
+                value=self.Width,
             )
         return self
 
@@ -438,14 +448,15 @@ class ECHO2DParams(BaseModel):
 
         Raises
         ------
-        FileNotFoundError
-            If *path* does not exist.
-        ValueError
-            If the file contains unrecognised keys or malformed values.
+        ConfigError
+            If *path* does not exist or the file contains unrecognised
+            keys or malformed values.
         """
         path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"Input file not found: {path}")
+            raise ConfigError(
+                f"Input file not found: {path}", config_file=path
+            )
 
         raw_text = path.read_text(encoding="utf-8")
         return cls.from_string(raw_text)
@@ -660,15 +671,17 @@ class ECHO2DParams(BaseModel):
 
         Raises
         ------
-        ValueError
+        ConfigError
             If *name* is not a recognised template.
         """
         try:
             data = dict(cls._TEMPLATES[name])
         except KeyError:
-            raise ValueError(
+            raise ConfigError(
                 f"Unknown template {name!r}. "
-                f"Available: {list(cls._TEMPLATES.keys())}"
+                f"Available: {list(cls._TEMPLATES.keys())}",
+                field="template",
+                value=name,
             )
         data.update(overrides)
         return cls.model_validate(data)
@@ -774,7 +787,11 @@ def _parse_field_monitor_curly(line: str) -> FieldMonitorConfig:
     """Parse curly-brace format: ``FieldMonitor = { 'Ez' 'z' ... }``."""
     match = re.search(r"\{([^}]*)\}", line)
     if not match:
-        raise ValueError(f"Cannot parse curly-brace FieldMonitor line: {line!r}")
+        raise ConfigError(
+            f"Cannot parse curly-brace FieldMonitor line: {line!r}",
+            field="FieldMonitor",
+            value=line,
+        )
 
     content = match.group(1).strip()
 
@@ -798,8 +815,10 @@ def _parse_field_monitor_curly(line: str) -> FieldMonitorConfig:
             i = j
 
     if len(tokens) != 9:
-        raise ValueError(
-            f"Expected 9 tokens in FieldMonitor, got {len(tokens)}: {tokens}"
+        raise ConfigError(
+            f"Expected 9 tokens in FieldMonitor, got {len(tokens)}: {tokens}",
+            field="FieldMonitor",
+            value=line,
         )
 
     return FieldMonitorConfig(
@@ -823,9 +842,11 @@ def _parse_field_monitor_standard(line: str) -> FieldMonitorConfig:
     # Split on whitespace
     tokens = content.split()
     if len(tokens) != 9:
-        raise ValueError(
+        raise ConfigError(
             f"Expected 9 tokens in FieldMonitor (standard format), "
-            f"got {len(tokens)}: {tokens}"
+            f"got {len(tokens)}: {tokens}",
+            field="FieldMonitor",
+            value=line,
         )
 
     return FieldMonitorConfig(
