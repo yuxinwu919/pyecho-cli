@@ -269,12 +269,24 @@ class ECHO2DParams(BaseModel):
 
     @model_validator(mode="after")
     def _validate_recta_modes(self) -> "ECHO2DParams":
-        """For recta geometry with symmetry, modes should be odd."""
+        """For recta geometry with symmetry, validate that odd modes are used.
+
+        With magnetic/electric symmetry on axis, only odd azimuthal modes
+        contribute for rectangular structures (ECHO manual §4.1 Eq. 4.17-4.18).
+        Even modes would produce zero wake and waste computation time.
+        """
         if self.GeometryType == "recta" and self.SymmetryCondition in ("magn", "elec"):
-            # With magnetic/electric symmetry on axis, only odd modes
-            # contribute for rectangular structures.
-            # This is a soft warning, not a hard error.
-            pass
+            even_modes = [m for m in self.Modes if m % 2 == 0]
+            if even_modes:
+                import warnings
+                warnings.warn(
+                    f"Recta geometry with {self.SymmetryCondition} symmetry: "
+                    f"even modes {even_modes} do not contribute to the wake. "
+                    f"Only odd modes (1, 3, 5, ...) produce non-zero results. "
+                    f"Consider removing even modes to save computation time.",
+                    UserWarning,
+                    stacklevel=2,
+                )
         return self
 
     @model_validator(mode="after")
@@ -284,6 +296,29 @@ class ECHO2DParams(BaseModel):
             raise ValueError(
                 f"Width must be > 0 for recta geometry, got {self.Width}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_mesh_resolution(self) -> "ECHO2DParams":
+        """Check mesh resolution relative to bunch length.
+
+        ECHO manual §1 recommends at least 5 mesh points across the RMS
+        bunch width for accurate results.  Fewer than 3 will likely
+        produce unreliable wakes.
+        """
+        sigma = self.BunchSigma
+        if sigma > 0:
+            n_points_z = sigma / max(self.StepZ, 1e-20)
+            if n_points_z < 3:
+                import warnings
+                warnings.warn(
+                    f"Only {n_points_z:.1f} mesh points across bunch sigma "
+                    f"(sigma={sigma} m, StepZ={self.StepZ} m). "
+                    f"ECHO manual recommends at least 5 points. "
+                    f"Results may be inaccurate.",
+                    UserWarning,
+                    stacklevel=2,
+                )
         return self
 
     # ------------------------------------------------------------------
