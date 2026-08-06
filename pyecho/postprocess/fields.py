@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence, cast
 
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
+
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 
 from pyecho.datamodel import MonitorData
 from pyecho.errors import PostProcessError
@@ -41,7 +44,7 @@ def extract_field_at_point(
     t: float | None = None,
     z: float | None = None,
     r: float | None = None,
-) -> float:
+) -> float | np.ndarray:
     """Extract the field value at a specific (t, z, r) point using linear
     interpolation.
 
@@ -74,10 +77,10 @@ def extract_field_at_point(
     Uses :class:`scipy.interpolate.RegularGridInterpolator` with linear
     interpolation, equivalent to MATLAB's ``interp2`` with ``'linear'``.
     """
-    F = monitor.F
-    T = monitor.T
-    Z = monitor.Z
-    R = monitor.R
+    F: np.ndarray = monitor.F
+    T: np.ndarray = monitor.T
+    Z: np.ndarray = monitor.Z
+    R: np.ndarray = monitor.R
 
     # Determine which axes we have
     if F.ndim == 1:
@@ -106,8 +109,8 @@ def extract_field_at_point(
                 interp_r = np.interp(r, R, np.arange(len(R)))
                 idx_lo = int(np.floor(interp_r))
                 idx_hi = min(idx_lo + 1, len(R) - 1)
-                frac = interp_r - idx_lo
-                return F[:, idx_lo] * (1 - frac) + F[:, idx_hi] * frac
+                frac: float = interp_r - idx_lo
+                return cast(np.ndarray, F[:, idx_lo] * (1 - frac) + F[:, idx_hi] * frac)
             elif t is not None:
                 interp = RegularGridInterpolator(
                     (T, R), F, bounds_error=False, fill_value=0.0
@@ -128,7 +131,7 @@ def extract_field_at_point(
                 idx_lo = int(np.floor(interp_z))
                 idx_hi = min(idx_lo + 1, len(Z) - 1)
                 frac = interp_z - idx_lo
-                return F[:, idx_lo] * (1 - frac) + F[:, idx_hi] * frac
+                return cast(np.ndarray, F[:, idx_lo] * (1 - frac) + F[:, idx_hi] * frac)
             else:
                 return F
 
@@ -154,7 +157,7 @@ def extract_field_at_point(
                 (Z, R), F[0, :, :], bounds_error=False, fill_value=0.0
             )
             # Verify z,r are within bounds
-            trace = np.zeros(len(T), dtype=np.float64)
+            trace: np.ndarray = np.zeros(len(T), dtype=np.float64)
             for i in range(len(T)):
                 trace[i] = float(interp_zr(np.array([[z, r]]))[0])
             return trace
@@ -307,6 +310,7 @@ def synthesize_total_field(
                     "Cannot determine structure width D from monitor files. "
                     "Please provide the `D` parameter explicitly."
                 )
+        assert D is not None
 
         # Leading column (ct or z-position) excluded from field data
         # (MATLAB: F(:,2:p) = ... where p = kz*kr+1)
@@ -340,6 +344,9 @@ def synthesize_total_field(
 
     if total_field is None:
         raise PostProcessError("No valid monitor data loaded for synthesis.")
+
+    # D is guaranteed to be set by the first iteration above.
+    assert D is not None
 
     # Apply 2/D normalisation (MATLAB: F(:,2:p) = F(:,2:p)/D*2)
     total_field = total_field * (2.0 / D)
@@ -497,7 +504,7 @@ def extract_point_monitor(
     R = monitor.R
 
     nt = len(T)
-    trace = np.zeros(nt, dtype=np.float64)
+    trace: np.ndarray = np.zeros(nt, dtype=np.float64)
 
     if F.ndim != 3:
         raise ValueError(f"Expected 3-D monitor data (nt,nz,nr), got shape {F.shape}")
@@ -741,6 +748,8 @@ def plot_field_3d(
     F_plot = F[idx, :, :].T
     Z_mm = monitor.Z * 1e3
     R_mm = monitor.R * 1e3
+    Zg: np.ndarray
+    Rg: np.ndarray
     Zg, Rg = np.meshgrid(Z_mm, R_mm, indexing="xy")
 
     fig = plt.figure(figsize=(12, 8))

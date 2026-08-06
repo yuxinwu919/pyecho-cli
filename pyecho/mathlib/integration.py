@@ -41,7 +41,7 @@ def integr_tr(h: float, x: np.ndarray) -> np.ndarray:
         Cumulative integral, same length as *x*.
     """
     n = len(x)
-    y = np.empty(n, dtype=np.float64)
+    y: np.ndarray = np.empty(n, dtype=np.float64)
     y[0] = 0.0
     for i in range(1, n):
         y[i] = y[i - 1] + 0.5 * (x[i] + x[i - 1])
@@ -77,7 +77,7 @@ def diff_l(h: float, x: np.ndarray) -> np.ndarray:
         Differentiated array, same length as *x*.
     """
     n = len(x)
-    y = np.empty(n, dtype=np.float64)
+    y: np.ndarray = np.empty(n, dtype=np.float64)
     y[0] = 0.0
     for i in range(1, n):
         y[i] = 2.0 * (x[i] - x[i - 1]) - y[i - 1]

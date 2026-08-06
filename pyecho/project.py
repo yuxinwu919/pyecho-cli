@@ -42,7 +42,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
 from pyecho._version import __version__

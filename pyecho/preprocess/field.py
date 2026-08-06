@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -230,7 +230,7 @@ class InitialFieldGenerator:
                 "expected at least 6 (z, y, x', y', Pz, weight).",
                 input_file=filepath,
             )
-        return data
+        return cast(np.ndarray, data)
 
     # ------------------------------------------------------------------
     # Internal: charge deposition (bilinear interpolation)
@@ -270,7 +270,7 @@ class InitialFieldGenerator:
         np.ndarray
             2-D charge density array of shape (nz, nr).
         """
-        charge = np.zeros((nz, nr), dtype=np.float64)
+        charge: np.ndarray = np.zeros((nz, nr), dtype=np.float64)
 
         z_coords = particles[:, 0]
         r_coords = np.sqrt(particles[:, 1]**2)  # y → r for round geometry
@@ -322,7 +322,7 @@ class InitialFieldGenerator:
         Replaces each point with the average of itself and its
         neighbour: ``f[i] = 0.5 * (f[i] + f[i-1])``.
         """
-        filtered = data.copy()
+        filtered: np.ndarray = data.copy()
         for i in range(1, data.shape[0]):
             filtered[i, :] = 0.5 * (data[i, :] + data[i - 1, :])
         return filtered
@@ -356,7 +356,7 @@ class InitialFieldGenerator:
         """
         from pyecho.mathlib import eps0
 
-        phi = np.zeros((nz, nr), dtype=np.float64)
+        phi: np.ndarray = np.zeros((nz, nr), dtype=np.float64)
         omega = 1.8  # SOR relaxation parameter
 
         # Precompute r coordinates at cell centres
@@ -401,7 +401,7 @@ class InitialFieldGenerator:
                     phi[i, j] = (1.0 - omega) * phi[i, j] + omega * phi_new
 
             # Check convergence
-            diff = np.max(np.abs(phi - phi_old))
+            diff: float = np.max(np.abs(phi - phi_old))
             if diff < tol:
                 logger.info("Poisson solver converged in %d iterations", iteration + 1)
                 break

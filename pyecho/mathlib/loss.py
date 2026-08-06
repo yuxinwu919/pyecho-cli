@@ -60,14 +60,14 @@ def loss_shape(
     n = len(w)
 
     # Zero-pad bunch to match wake length
-    bi2 = np.zeros(n, dtype=np.float64)
+    bi2: np.ndarray = np.zeros(n, dtype=np.float64)
     nb = len(bunch[:, 1])
     bi2[:nb] = bunch[:, 1]
 
     h = wake[1, 0] - wake[0, 0]
     loss = -np.dot(bi2, w) * h
     spread = np.sqrt(np.dot(bi2, (w + loss) ** 2) * h)
-    peak = np.max(np.abs(w))
+    peak: float = np.max(np.abs(w))
     return float(loss), float(spread), float(peak)
 
 

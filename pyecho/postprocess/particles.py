@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -62,7 +62,7 @@ _ASTRA_MAGIC_SIZE: int = 4
 # ---------------------------------------------------------------------------
 
 
-def load_echo_particles(filepath: str | Path) -> dict[str, np.ndarray]:
+def load_echo_particles(filepath: str | Path) -> dict[str, Any]:
     """Load the ECHO2D ``particles.out`` binary file.
 
     Replicates the reading logic in ``AnalyseParticles.m``.
@@ -359,7 +359,7 @@ def convert_echo_to_astra(
         Np, echo_file, astra_file, macro_charge,
     )
 
-    return Np
+    return cast(int, Np)
 
 
 # ---------------------------------------------------------------------------

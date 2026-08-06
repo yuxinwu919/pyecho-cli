@@ -219,7 +219,7 @@ def assemble_wcc(
     ns = len(s)
 
     # Allocate Wcc matrix: (n_modes+1) rows × (ns+1) cols
-    Wcc = np.zeros((n_modes + 1, ns + 1), dtype=np.float64)
+    Wcc: np.ndarray = np.zeros((n_modes + 1, ns + 1), dtype=np.float64)
     Wcc[0, 1:] = s          # row 0, cols 1+ = s-grid
     Wcc[0, 0] = D           # row 0, col 0 = structure width
 
@@ -288,7 +288,7 @@ def assemble_wss(
     s = data_1[2:, 0].copy()
     ns = len(s)
 
-    Wss = np.zeros((n_modes + 1, ns + 1), dtype=np.float64)
+    Wss: np.ndarray = np.zeros((n_modes + 1, ns + 1), dtype=np.float64)
     Wss[0, 1:] = s
     Wss[0, 0] = D
 
@@ -372,8 +372,8 @@ def compute_wake_long_quad(
         n_modes = min(n_modes, Nm_avail)
 
     # Sum over modes
-    WL = np.zeros(ns, dtype=np.float64)
-    WQ_sum = np.zeros(ns, dtype=np.float64)
+    WL: np.ndarray = np.zeros(ns, dtype=np.float64)
+    WQ_sum: np.ndarray = np.zeros(ns, dtype=np.float64)
 
     k_vals = wcc[1:n_modes + 1, 0].copy()
 
@@ -449,7 +449,7 @@ def compute_wake_long_quad_dipole(
     else:
         n_modes_ss = min(n_modes_ss, Nm_ss_avail)
 
-    WD_sum = np.zeros(len(s), dtype=np.float64)
+    WD_sum: np.ndarray = np.zeros(len(s), dtype=np.float64)
     k_ss = wss[1:n_modes_ss + 1, 0].copy()
 
     for i in range(n_modes_ss):

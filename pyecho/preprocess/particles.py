@@ -152,7 +152,7 @@ class ASTRAConverter:
         if n_cols >= 8:
             weight = data[:, 7]
             # Normalise so total charge = 1
-            total_weight = np.sum(np.abs(weight))
+            total_weight: float = np.sum(np.abs(weight))
             if total_weight > 0:
                 weight = weight / total_weight
         else:
@@ -229,8 +229,8 @@ class ASTRAConverter:
         # so set x = 0
         x = np.zeros_like(z)
         clock = np.zeros_like(z)
-        index = np.arange(1, len(data) + 1, dtype=np.float64)
-        status = np.ones(len(data), dtype=np.float64)
+        index: np.ndarray = np.arange(1, len(data) + 1, dtype=np.float64)
+        status: np.ndarray = np.ones(len(data), dtype=np.float64)
 
         astra_data = np.column_stack([
             x, y, z, px, py, pz, clock, weight, index, status,
@@ -497,7 +497,7 @@ def particles_to_charge(
     >>> rho = particles_to_charge(0.0, 52, 100, 2e-4, 2e-4, particles)
     >>> print(f"Total deposited charge: {rho.sum():.4e}")
     """
-    charge = np.zeros((nz, nr), dtype=np.float64)
+    charge: np.ndarray = np.zeros((nz, nr), dtype=np.float64)
 
     z_coords = particles[:, 0]
     y_coords = particles[:, 1]  # radial coordinate for round geometry

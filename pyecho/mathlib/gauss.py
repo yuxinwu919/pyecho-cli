@@ -1,6 +1,7 @@
 """Gaussian function — equivalent to MatLib4ECHO/gauss.m."""
 
 import numpy as np
+from typing import cast
 
 
 def gauss(x: np.ndarray, sigma: float) -> np.ndarray:
@@ -26,4 +27,7 @@ def gauss(x: np.ndarray, sigma: float) -> np.ndarray:
     np.ndarray
         Gaussian values at each *x*, same shape as *x*.
     """
-    return np.exp(-(x ** 2) / (2.0 * sigma * sigma)) / (sigma * np.sqrt(2.0 * np.pi))
+    return cast(
+        np.ndarray,
+        np.exp(-(x ** 2) / (2.0 * sigma * sigma)) / (sigma * np.sqrt(2.0 * np.pi)),
+    )

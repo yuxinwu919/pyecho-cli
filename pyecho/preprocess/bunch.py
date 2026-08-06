@@ -109,7 +109,7 @@ def generate_flattop(
     # Falling edge (Gaussian)
     fall_center = flat_end + 1.5 * rise
 
-    rho = np.zeros(n_points, dtype=np.float64)
+    rho: np.ndarray = np.zeros(n_points, dtype=np.float64)
     for i, si in enumerate(s):
         if si < flat_start:
             rho[i] = np.exp(-0.5 * ((si - rise_center) / rise) ** 2)

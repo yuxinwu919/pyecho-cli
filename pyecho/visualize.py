@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -120,8 +120,8 @@ def plot_wake_round(
     if bunch is not None:
         # Scale bunch to match wake magnitude (same as MATLAB convention)
         B = np.asarray(bunch, dtype=float)
-        B_max = np.max(np.abs(B))
-        w_max = np.max(np.abs(w))
+        B_max: float = np.max(np.abs(B))
+        w_max: float = np.max(np.abs(w))
         if B_max > 0 and w_max > 0:
             K = w_max / B_max
             B_scaled = B * K
@@ -234,10 +234,10 @@ def plot_round_wake(
     if bunch is None:
         bunch = result.bunch
     if bunch is not None:
-        b_max = np.max(np.abs(bunch))
+        b_max: float = np.max(np.abs(bunch))
         for i, ax in enumerate(axes):
             W_data = result.Wlong if i == 0 else result.Wdipole
-            w_max = np.max(np.abs(W_data))
+            w_max: float = np.max(np.abs(W_data))
             bunch_scaled = bunch * (w_max / b_max) if b_max > 0 and w_max > 0 else bunch
             ax.plot(s_mm, bunch_scaled, "k-", linewidth=1.2, alpha=0.6,
                     label="Bunch (Iz0)")
@@ -309,8 +309,8 @@ def plot_flat_wake(
     # Overlay bunch profile on all three subplots
     if bunch is not None:
         for ax, (W, _, _, _) in zip(axes, components):
-            w_max = np.max(np.abs(W))
-            b_max = np.max(np.abs(bunch))
+            w_max: float = np.max(np.abs(W))
+            b_max: float = np.max(np.abs(bunch))
             if b_max > 0 and w_max > 0:
                 bunch_scaled = bunch * (w_max / b_max)
             else:
@@ -691,8 +691,8 @@ def plot_wake_modes(
         from pyecho.parser import load_bunch_profile
         s_bunch, I_bunch = load_bunch_profile(data_dir, offset_all, s)
         if I_bunch is not None and len(I_bunch) > 0:
-            w_max = max(np.max(np.abs(w)) for _, w in wakes)
-            b_max = np.max(np.abs(I_bunch))
+            w_max: float = max(np.max(np.abs(w)) for _, w in wakes)
+            b_max: float = np.max(np.abs(I_bunch))
             if b_max > 0 and w_max > 0:
                 I_scaled = I_bunch * (w_max / b_max)
             else:
@@ -797,17 +797,17 @@ def _extract_loss(result_or_s: Any) -> float | None:
     if isinstance(obj, np.ndarray):
         return None
     if hasattr(obj, "loss_factor"):
-        return obj.loss_factor
+        return cast(float, obj.loss_factor)
     if hasattr(obj, "loss_long"):
-        return obj.loss_long
+        return cast(float, obj.loss_long)
     if hasattr(obj, "wake_processed") and obj.wake_processed:
-        return obj.wake_processed.loss_factor
+        return cast(float, obj.wake_processed.loss_factor)
     if hasattr(obj, "modes"):
         modes = obj.modes
         if modes:
             first = next(iter(modes.values()))
             if first.wake_processed:
-                return first.wake_processed.loss_factor
+                return cast(float, first.wake_processed.loss_factor)
     return None
 
 
@@ -817,7 +817,7 @@ def _extract_units(result_or_s: Any) -> str | None:
     if isinstance(obj, np.ndarray):
         return None
     if hasattr(obj, "units"):
-        return obj.units
+        return cast(str, obj.units)
     if hasattr(obj, "wake_processed") and obj.wake_processed:
         return getattr(obj.wake_processed, "units", None)
     return None

@@ -268,8 +268,8 @@ class PostProcessor:
         )
 
         # --- Resolve magn/ directory -------------------------------------------
-        magn_dir = self._magn_dir if self._magn_dir else self.loader.dir / "magn"
-        if not magn_dir.is_dir():
+        magn_dir: Path | None = self._magn_dir if self._magn_dir else self.loader.dir / "magn"
+        if magn_dir is not None and not magn_dir.is_dir():
             fallback = self.loader._resolve_data_dir()
             if fallback.name.lower() not in ("elec",):
                 magn_dir = fallback
@@ -278,8 +278,8 @@ class PostProcessor:
                 magn_dir = None
 
         # --- Resolve elec/ directory -------------------------------------------
-        elec_dir = self._elec_dir if self._elec_dir else self.loader.dir / "elec"
-        if not elec_dir.is_dir():
+        elec_dir: Path | None = self._elec_dir if self._elec_dir else self.loader.dir / "elec"
+        if elec_dir is not None and not elec_dir.is_dir():
             # If the loader's data dir itself is elec/, use it directly.
             fallback = self.loader._resolve_data_dir()
             if fallback.name.lower() in ("elec",):
@@ -337,6 +337,7 @@ class PostProcessor:
             return self._partial_magn_only(magn_dir, n_modes_cc)
         else:
             # elec-only: Wdipole, zero Wlong/Wquad
+            assert elec_dir is not None  # both None handled above
             logger.info(
                 "Processing flat wakes (elec-only): %s, n_modes=%d",
                 elec_dir, n_modes_ss,
@@ -364,13 +365,13 @@ class PostProcessor:
         from pyecho.mathlib.integration import integr_tr
 
         wss = assemble_wss(elec_dir, n_modes=n_modes)
-        s = wss[0, 1:].astype(np.float64)
+        s: np.ndarray = wss[0, 1:].astype(np.float64)
         D = float(wss[0, 0])
         hs = float(s[1] - s[0])
 
         # Replicate compute_wake_long_quad_dipole Wdipole formula:
         #   Wdipole = -IntegrTr(hs, Σ k²·Wss) * 2/D * 1e-6  [V/pC/mm]
-        k_sq = wss[1:, 0] ** 2
+        k_sq: np.ndarray = wss[1:, 0] ** 2
         WD_sum = np.sum(k_sq[:, None] * wss[1:, 1:], axis=0)
         Wdipole = -integr_tr(hs, WD_sum) * (2.0 / D) * 1e-6
 

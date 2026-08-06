@@ -247,7 +247,7 @@ class ConvergenceRunner:
         geo_type = self._base_meta.geometry_type
         try:
             wake = quick_postprocess(str(conv_dir), geometry=geo_type)
-            return wake.loss_long  # type: ignore[union-attr]
+            return wake.loss_long
         finally:
             shutil.rmtree(conv_dir, ignore_errors=True)
 

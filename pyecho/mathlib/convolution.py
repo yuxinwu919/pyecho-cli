@@ -13,6 +13,7 @@ product is inverse-transformed to obtain the wake potential.
 from __future__ import annotations
 
 import numpy as np
+from typing import cast
 from numpy.polynomial import Polynomial
 
 from pyecho.mathlib.fft import wake2impedance, impedance2wake
@@ -81,14 +82,14 @@ def za_zb(
 
     # --- extend bunch to double length with zero-padding ---
     xb1 = xb[0] + np.arange(n) * ds
-    bunch1 = np.zeros(n, dtype=np.float64)
+    bunch1: np.ndarray = np.zeros(n, dtype=np.float64)
     bunch1[:nb] = bunch
 
     # --- FFT of bunch (scaled by c) ---
     _, Zb = wake2impedance(xb1, bunch1 * _C_LIGHT)
 
     # --- multiply Za · Zb, enforce conjugate symmetry ---
-    Z = np.zeros(n, dtype=np.complex128)
+    Z: np.ndarray = np.zeros(n, dtype=np.complex128)
     Z[:nb] = Za * Zb[:nb]
     # Mirror with conjugation for real-valued inverse
     Z[nb:] = np.conj(Z[:nb][::-1])
@@ -98,7 +99,7 @@ def za_zb(
 
     # Return first half, negated (MATLAB convention)
     res = -wa[:nb].reshape(-1, 1)
-    return res
+    return cast(np.ndarray, res)
 
 
 def _interp1_linear(
@@ -125,10 +126,10 @@ def _interp1_linear(
     np.ndarray
         Interpolated values at *xi*.
     """
-    result = np.full_like(xi, fill_value, dtype=np.float64)
+    result: np.ndarray = np.full_like(xi, fill_value, dtype=np.float64)
 
     # Find insertion indices
-    idx = np.searchsorted(x, xi)
+    idx = np.asarray(np.searchsorted(x, xi))
 
     # Interior points: idx in [1, len(x)-1]
     interior = (idx > 0) & (idx < len(x))

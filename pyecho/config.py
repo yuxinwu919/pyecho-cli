@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -511,7 +511,7 @@ class ECHO2DParams(BaseModel):
                 _parse_field_monitor_line(fm) for fm in field_monitors
             ]
 
-        return cls.model_validate(kv)
+        return cast(ECHO2DParams, cls.model_validate(kv))
 
     # ------------------------------------------------------------------
     # Templates
@@ -684,7 +684,7 @@ class ECHO2DParams(BaseModel):
                 value=name,
             )
         data.update(overrides)
-        return cls.model_validate(data)
+        return cast(ECHO2DParams, cls.model_validate(data))
 
     @classmethod
     def list_templates(cls) -> list[str]:
@@ -823,7 +823,7 @@ def _parse_field_monitor_curly(line: str) -> FieldMonitorConfig:
 
     return FieldMonitorConfig(
         component=tokens[0],
-        time_type=tokens[1],  # type: ignore[arg-type]
+        time_type=tokens[1],
         z0=float(tokens[2]),
         z1=float(tokens[3]),
         y0=float(tokens[4]),
@@ -851,7 +851,7 @@ def _parse_field_monitor_standard(line: str) -> FieldMonitorConfig:
 
     return FieldMonitorConfig(
         component=tokens[0],
-        time_type=tokens[1],  # type: ignore[arg-type]
+        time_type=tokens[1],
         z0=float(tokens[2]),
         z1=float(tokens[3]),
         y0=float(tokens[4]),

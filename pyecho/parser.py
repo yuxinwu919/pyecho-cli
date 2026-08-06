@@ -20,7 +20,7 @@ import re
 import struct
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
@@ -378,9 +378,9 @@ def parse_monitor_header(filepath: str | Path) -> dict:
 
     # Map to canonical names
     result: dict = {}
-    for k, v in header_map.items():
+    for k, hval in header_map.items():
         canonical = key_map.get(k, k)
-        result[canonical] = v
+        result[canonical] = hval
 
     return result
 
@@ -609,7 +609,7 @@ class OutputLoader:
         except Exception as exc:
             raise ParserError(f"Failed to parse {filepath}: {exc}") from exc
 
-        return matrix
+        return cast(np.ndarray, matrix)
 
     def load_wss(self) -> np.ndarray | None:
         """Load ``Wss_odd.txt`` (sin-sin coupling matrix).
@@ -630,7 +630,7 @@ class OutputLoader:
         except Exception as exc:
             raise ParserError(f"Failed to parse {filepath}: {exc}") from exc
 
-        return matrix
+        return cast(np.ndarray, matrix)
 
     # ------------------------------------------------------------------
     # Public methods — field monitors
@@ -890,7 +890,7 @@ class OutputLoader:
             ("pz", np.float64),
             ("status", np.int64),
         ])
-        result = np.empty(Np, dtype=dtype)
+        result: np.ndarray = np.empty(Np, dtype=dtype)
         result["x"] = coords[:, 0]
         result["y"] = coords[:, 1]
         result["z"] = coords[:, 2]
@@ -925,7 +925,7 @@ class OutputLoader:
         except Exception as exc:
             raise ParserError(f"Failed to parse {filepath}: {exc}") from exc
 
-        return data
+        return cast(np.ndarray, data)
 
     # ------------------------------------------------------------------
     # Public methods — status
@@ -1188,7 +1188,7 @@ def _read_monitor_data(filepath: Path) -> np.ndarray:
     elif data.ndim == 1:
         data = data.reshape(-1, 1)
 
-    return data
+    return cast(np.ndarray, data)
 
 
 # ---------------------------------------------------------------------------
