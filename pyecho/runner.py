@@ -147,8 +147,14 @@ class ECHO2DRunner:
             if candidate.is_file():
                 path = candidate
             else:
+                searched = [value] + [
+                    str(project_root / rel) for rel in _PLATFORM_EXECUTABLE_MAP.values()
+                ]
                 raise ExecutableNotFoundError(
-                    f"ECHO2D executable not found: {value}"
+                    f"ECHO2D executable not found: {value}\n"
+                    "Searched paths:\n  " + "\n  ".join(searched),
+                    executable=value,
+                    searched_paths=searched,
                 )
         self._executable_path = str(path.resolve())
 
@@ -265,6 +271,11 @@ class ECHO2DRunner:
 
         # 1. Write input file if params provided
         if params is not None:
+            if not self.work_dir.is_dir():
+                logger.warning(
+                    "work_dir %s no longer exists; recreating it", self.work_dir
+                )
+                self.work_dir.mkdir(parents=True, exist_ok=True)
             if geometry_file:
                 params = params.model_copy(update={"GeometryFile": geometry_file})
             params = self._ensure_geometry_in_work_dir(params)
@@ -293,8 +304,15 @@ class ECHO2DRunner:
                 bufsize=1,
             )
         except FileNotFoundError as exc:
+            project_root = self._find_project_root()
+            searched = [self.executable] + [
+                str(project_root / rel) for rel in _PLATFORM_EXECUTABLE_MAP.values()
+            ]
             raise ExecutableNotFoundError(
-                f"ECHO2D executable not found: {self.executable}"
+                f"ECHO2D executable not found: {self.executable}\n"
+                "Searched paths:\n  " + "\n  ".join(searched),
+                executable=self.executable,
+                searched_paths=searched,
             ) from exc
         process = self._current_process
 
@@ -335,6 +353,10 @@ class ECHO2DRunner:
                 work_dir=self.work_dir,
                 executable=self.executable,
             )
+        finally:
+            # The process has exited (or is killed); drop the reference so a
+            # later kill() call does not operate on a finished subprocess.
+            self._current_process = None
 
         elapsed = time.monotonic() - t_start
 
@@ -344,6 +366,17 @@ class ECHO2DRunner:
             raise SimulationCrashedError(
                 f"ECHO2D exited with code {return_code}",
                 stderr=stderr_text,
+                returncode=return_code,
+                work_dir=self.work_dir,
+                executable=self.executable,
+            )
+
+        # 5b. Guard against a silent no-op: ECHO2D exited 0 but emitted no
+        # stdout, so we cannot trust the (likely missing) output files.
+        if not stdout_lines:
+            raise SimulationCrashedError(
+                "ECHO2D produced no output (empty stdout)",
+                stderr="\n".join(stderr_lines),
                 returncode=return_code,
                 work_dir=self.work_dir,
                 executable=self.executable,
@@ -394,6 +427,11 @@ class ECHO2DRunner:
         t_start = time.monotonic()
 
         if params is not None:
+            if not self.work_dir.is_dir():
+                logger.warning(
+                    "work_dir %s no longer exists; recreating it", self.work_dir
+                )
+                self.work_dir.mkdir(parents=True, exist_ok=True)
             if geometry_file:
                 params = params.model_copy(update={"GeometryFile": geometry_file})
             params = self._ensure_geometry_in_work_dir(params)
@@ -415,8 +453,15 @@ class ECHO2DRunner:
                 bufsize=1,
             )
         except FileNotFoundError as exc:
+            project_root = self._find_project_root()
+            searched = [self.executable] + [
+                str(project_root / rel) for rel in _PLATFORM_EXECUTABLE_MAP.values()
+            ]
             raise ExecutableNotFoundError(
-                f"ECHO2D executable not found: {self.executable}"
+                f"ECHO2D executable not found: {self.executable}\n"
+                "Searched paths:\n  " + "\n  ".join(searched),
+                executable=self.executable,
+                searched_paths=searched,
             ) from exc
 
         stdout_lines: list[str] = []
@@ -450,6 +495,10 @@ class ECHO2DRunner:
                 work_dir=self.work_dir,
                 executable=self.executable,
             )
+        finally:
+            # The process has exited (or is killed); drop the reference so a
+            # later kill() call does not operate on a finished subprocess.
+            self._current_process = None
 
         elapsed = time.monotonic() - t_start
 
@@ -458,6 +507,15 @@ class ECHO2DRunner:
             raise SimulationCrashedError(
                 f"ECHO2D exited with code {return_code}",
                 stderr=stderr_text,
+                returncode=return_code,
+                work_dir=self.work_dir,
+                executable=self.executable,
+            )
+
+        if not stdout_lines:
+            raise SimulationCrashedError(
+                "ECHO2D produced no output (empty stdout)",
+                stderr="\n".join(stderr_lines),
                 returncode=return_code,
                 work_dir=self.work_dir,
                 executable=self.executable,

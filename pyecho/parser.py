@@ -124,14 +124,26 @@ def parse_wake_file(filepath: str | Path) -> dict:
     parts_1 = data_lines[0].split()
     if len(parts_1) < 2:
         raise ParserError(f"Line 1 of {filepath} has insufficient tokens.")
-    hr = float(parts_1[0])
-    offset = int(parts_1[1])
+    try:
+        hr = float(parts_1[0])
+        offset = int(parts_1[1])
+    except ValueError as exc:
+        raise ParserError(
+            f"Line 1 of {filepath} is malformed: expected 'hr offset', "
+            f"got {parts_1!r}."
+        ) from exc
 
     parts_2 = data_lines[1].split()
     if len(parts_2) < 2:
         raise ParserError(f"Line 2 of {filepath} has insufficient tokens.")
-    D = float(parts_2[0])
-    sigma = float(parts_2[1])
+    try:
+        D = float(parts_2[0])
+        sigma = float(parts_2[1])
+    except ValueError as exc:
+        raise ParserError(
+            f"Line 2 of {filepath} is malformed: expected 'D sigma', "
+            f"got {parts_2!r}."
+        ) from exc
 
     # Parse data lines
     s_vals: list[float] = []
@@ -139,8 +151,19 @@ def parse_wake_file(filepath: str | Path) -> dict:
     for dl in data_lines[2:]:
         tokens = dl.split()
         if len(tokens) >= 2:
-            s_vals.append(float(tokens[0]))
-            w_vals.append(float(tokens[1]))
+            try:
+                s_vals.append(float(tokens[0]))
+                w_vals.append(float(tokens[1]))
+            except ValueError as exc:
+                raise ParserError(
+                    f"Data line of {filepath} is not numeric: {dl!r}"
+                ) from exc
+
+    if not s_vals or len(s_vals) != len(w_vals):
+        raise ParserError(
+            f"Wake file {filepath} contains no usable s/W data rows "
+            f"({len(s_vals)} parsed)."
+        )
 
     return {
         "hr": hr,
@@ -194,7 +217,17 @@ def parse_wake_monitor_file(filepath: str | Path) -> dict:
 
     # Read all doubles (little-endian, as produced by Fortran on x86/ARM)
     n = struct.unpack_from("<d", raw, 0)[0]
-    n_int = int(n)
+    try:
+        n_int = int(n)
+    except (ValueError, OverflowError) as exc:
+        raise ParserError(
+            f"WakeMonitor {filepath}: invalid point-count field {n!r}."
+        ) from exc
+
+    if n_int <= 0:
+        raise ParserError(
+            f"WakeMonitor {filepath}: point count n={n_int} is not positive."
+        )
 
     expected_size = 8 + n_int * 8
     if len(raw) < expected_size:
@@ -534,17 +567,7 @@ class OutputLoader:
             logger.debug("Iz0.txt not found in %s", data_dir)
             return None
 
-        try:
-            data = np.loadtxt(filepath)
-        except Exception as exc:
-            raise ParserError(f"Failed to parse {filepath}: {exc}") from exc
-
-        if data.ndim == 1:
-            data = data.reshape(-1, 1)
-
-        s_array = data[:, 0]
-        current_2d = data[:, 1:] if data.shape[1] > 1 else data[:, 1:]
-        return s_array, current_2d
+        return _load_current_file(filepath)
 
     def load_currents_radial(self) -> tuple[np.ndarray, np.ndarray] | None:
         """Load ``Ir0.txt`` (radial current profile).
@@ -560,17 +583,7 @@ class OutputLoader:
             logger.debug("Ir0.txt not found in %s", data_dir)
             return None
 
-        try:
-            data = np.loadtxt(filepath)
-        except Exception as exc:
-            raise ParserError(f"Failed to parse {filepath}: {exc}") from exc
-
-        if data.ndim == 1:
-            data = data.reshape(-1, 1)
-
-        s_array = data[:, 0]
-        current_2d = data[:, 1:] if data.shape[1] > 1 else data[:, 1:]
-        return s_array, current_2d
+        return _load_current_file(filepath)
 
     # ------------------------------------------------------------------
     # Public methods — Wcc / Wss coupling matrices
@@ -661,17 +674,43 @@ class OutputLoader:
         header = _parse_monitor_full(filepath)
         data = _read_monitor_data(filepath)
 
+        # Gracefully skip empty / coordinate-only monitor files.
+        if data.shape[0] == 0:
+            logger.warning(
+                "Monitor file %s contains no data rows; skipping.",
+                filepath.name,
+            )
+            return None
+
+        n_rows = data.shape[0]
+
         # ---- Remap ECHO2D header keys to canonical names ----
         # Real files use: k_ct/h_ct/ct0, k_r/h_r/r0,
         #   s-type: k_z/h_z/z0   (static lab-frame window)
         #   z-type: k_s/h_s/s0   (moving co-moving window)
         # _parse_monitor_full stores them verbatim (k_ct, h_ct, etc.)
-        kt  = header.get("k_ct", data.shape[0])
+        kt  = header.get("k_ct", n_rows)
         ht  = header.get("h_ct", 1.0)
         t0  = header.get("ct0", 0.0)
-        kr  = header.get("k_r", 1)
+        kr  = int(header.get("k_r", 1))
         hr  = header.get("h_r", 1.0)
         _r0 = header.get("r0", 0.0)
+
+        # Validate the time axis against the actual number of data rows so a
+        # mismatched header cannot silently truncate or mis-shape the grid.
+        if kt != n_rows:
+            logger.warning(
+                "Monitor %s: header k_ct=%d does not match %d data rows; "
+                "using %d time steps.",
+                filepath.name, kt, n_rows, n_rows,
+            )
+            kt = n_rows
+
+        if kr <= 0:
+            logger.warning(
+                "Monitor %s: invalid k_r=%d; using 1.", filepath.name, kr,
+            )
+            kr = 1
 
         # Determine time_type: s-type has k_z; z-type has k_s
         has_kz = "k_z" in header
@@ -695,29 +734,60 @@ class OutputLoader:
         mesh_pos = data[:, 0].copy()   # per-row coordinate
         F_flat = data[:, 1:]            # field values only
 
+        # A coordinate-only file (no field columns) is not usable.
+        if F_flat.shape[1] == 0:
+            logger.warning(
+                "Monitor file %s has no field columns (only per-row "
+                "coordinates); skipping.", filepath.name,
+            )
+            return None
+
+        def _reshape_field(grid_flat: np.ndarray, nz: int, label: str) -> np.ndarray:
+            """Reshape (kt, nz*kr) → (kt, nz, kr), falling back to the
+            flat grid with a warning when the header predicts a size that
+            does not match the file.
+            """
+            if grid_flat.shape[1] == nz * kr:
+                try:
+                    return grid_flat.reshape(kt, nz, kr)
+                except ValueError as exc:
+                    raise ParserError(
+                        f"Monitor {filepath.name}: field grid {grid_flat.shape} "
+                        f"cannot be reshaped to ({kt}, {nz}, {kr}); header "
+                        f"{label} dimension inconsistent with data rows."
+                    ) from exc
+            logger.warning(
+                "Monitor %s: header predicts %d field columns "
+                "(%s=%d × k_r=%d) but file has %d; returning flat grid.",
+                filepath.name, nz * kr, label, nz, kr, grid_flat.shape[1],
+            )
+            return grid_flat
+
         if time_type == "s":
             # s-type: static lab-frame z-grid [z0, z1] with k_z points
-            kz = header.get("k_z", 1)
+            kz = int(header.get("k_z", 1))
             hz = header.get("h_z", 1.0)
             _z0 = header.get("z0", 0.0)
+            if kz <= 0:
+                logger.warning(
+                    "Monitor %s: invalid k_z=%d; using 1.", filepath.name, kz,
+                )
+                kz = 1
             Z = np.arange(kz, dtype=np.float64) * hz + _z0
-            # Reshape: (kt, kz*kr) → attempt (kt, kz, kr), fallback (kt, -1)
-            if F_flat.shape[1] == kz * kr:
-                F = F_flat.reshape(kt, kz, kr)
-            else:
-                F = F_flat
+            F = _reshape_field(F_flat, kz, "k_z")
         else:
             # z-type: moving co-moving s-grid [s0, s1] with k_s points
-            ks = header.get("k_s", 1)
+            ks = int(header.get("k_s", 1))
             hs = header.get("h_s", 1.0)
             _s0 = header.get("s0", 0.0)
+            if ks <= 0:
+                logger.warning(
+                    "Monitor %s: invalid k_s=%d; using 1.", filepath.name, ks,
+                )
+                ks = 1
             S = np.arange(ks, dtype=np.float64) * hs + _s0
             Z = -S  # MATLAB convention: Z = -S for z-time
-            # Reshape: (kt, ks*kr) → (kt, ks, kr)
-            if F_flat.shape[1] == ks * kr:
-                F = F_flat.reshape(kt, ks, kr)
-            else:
-                F = F_flat
+            F = _reshape_field(F_flat, ks, "k_s")
             # Store mesh_pos for lab-frame reconstruction:
             # z_lab = mesh_pos[i] + Z  (MATLAB: MeshPos + Z)
 
@@ -964,6 +1034,48 @@ class OutputLoader:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _load_current_file(filepath: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Load a current-profile file (``Iz0.txt`` / ``Ir0.txt``).
+
+    Parameters
+    ----------
+    filepath : Path
+        Path to the current-profile file.
+
+    Returns
+    -------
+    tuple of (np.ndarray, np.ndarray)
+        ``(s_array, current_2d)`` where *s_array* is the longitudinal
+        coordinate and *current_2d* holds the remaining columns.
+
+    Raises
+    ------
+    ParserError
+        If the file is unreadable, empty, or malformed.
+    """
+    try:
+        data = np.loadtxt(filepath)
+    except Exception as exc:
+        raise ParserError(f"Failed to parse {filepath}: {exc}") from exc
+
+    # Normalise scalar / 1-D input to a 2-D column array so that
+    # column indexing below is always safe.
+    if data.ndim == 0:
+        data = data.reshape(1, 1)
+    elif data.ndim == 1:
+        data = data.reshape(-1, 1)
+
+    if data.shape[0] == 0 or data.shape[1] == 0:
+        raise ParserError(
+            f"Current file {filepath} contains no usable data rows "
+            f"(shape {data.shape})."
+        )
+
+    s_array = data[:, 0]
+    current_2d = data[:, 1:]
+    return s_array, current_2d
+
+
 def _parse_monitor_full(filepath: Path) -> dict:
     """Parse the complete header of a monitor file.
 
@@ -1070,8 +1182,12 @@ def _read_monitor_data(filepath: Path) -> np.ndarray:
     except Exception as exc:
         raise ParserError(f"Failed to parse monitor data {filepath}: {exc}") from exc
 
-    if data.ndim == 1:
+    # Normalise scalar / 1-D input to a 2-D array so column indexing is safe.
+    if data.ndim == 0:
+        data = data.reshape(1, 1)
+    elif data.ndim == 1:
         data = data.reshape(-1, 1)
+
     return data
 
 
@@ -1118,16 +1234,25 @@ def load_bunch_profile(
         _log.debug("Iz0.txt not found in %s", output_dir)
         return None, None
 
-    iz = np.loadtxt(iz_path)
+    try:
+        iz = np.loadtxt(iz_path)
+    except Exception as exc:
+        raise ParserError(f"Failed to parse {iz_path}: {exc}") from exc
+
+    # Empty or scalar (single-value) files are not usable as profiles.
+    if iz.ndim == 0 or iz.size == 0:
+        _log.warning("Iz0.txt is empty or malformed in %s", output_dir)
+        return None, None
+
     s_raw = iz[:, 0]
     # MATLAB: Iz(:, offset+3)  →  0-indexed: iz[:, offset+2]
     col = offset + 2
-    if col >= iz.shape[1]:
+    if col >= iz.shape[1] or col < 0:
         _log.warning(
             "Iz0.txt has %d columns but offset=%d requires column %d; "
-            "using last column.", iz.shape[1], offset, col,
+            "clamping to a valid column.", iz.shape[1], offset, col,
         )
-        col = iz.shape[1] - 1
+        col = min(max(col, 0), iz.shape[1] - 1)
     I_raw = iz[:, col] * 1e9  # A → nA → ???  Actually MATLAB uses ×1e9
 
     if s_wake is not None:

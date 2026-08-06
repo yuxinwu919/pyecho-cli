@@ -30,7 +30,11 @@ class PyEchoError(Exception):
     def __str__(self) -> str:
         parts = [self.message] if self.message else [self.__class__.__name__]
         for key, value in self.ctx.items():
-            parts.append(f"  {key}: {value}")
+            if isinstance(value, (list, tuple)):
+                lines = "\n".join(f"    {item}" for item in value)
+                parts.append(f"  {key}:\n{lines}")
+            else:
+                parts.append(f"  {key}: {value}")
         return "\n".join(parts)
 
     def __repr__(self) -> str:
