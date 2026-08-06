@@ -651,6 +651,10 @@ class PostProcessor:
         ------
         MissingOutputError
             If no ECHO2D output data is found.
+        PostProcessError
+            If the geometry type cannot be determined from the output
+            directory structure, or if every applicable post-processing
+            step fails.
         """
         if not self.loader.has_output():
             raise MissingOutputError(
@@ -662,18 +666,21 @@ class PostProcessor:
             "geometry_type": self._effective_type,
             "output_dir": str(self.loader.dir),
         }
+        failed_steps: list[tuple[str, str]] = []
 
         if self._effective_type == "round":
             logger.info("Running full round-geometry post-processing...")
             try:
                 results["monopole"] = self.process_wake_monopole()
             except Exception as exc:
+                failed_steps.append(("monopole", str(exc)))
                 logger.warning("Monopole processing failed: %s", exc)
                 results["monopole"] = None
 
             try:
                 results["dipole"] = self.process_wake_dipole()
             except Exception as exc:
+                failed_steps.append(("dipole", str(exc)))
                 logger.warning("Dipole processing failed: %s", exc)
                 results["dipole"] = None
 
@@ -689,21 +696,15 @@ class PostProcessor:
                 try:
                     results["total_field"] = self.synthesize_total_field()
                 except Exception as exc:
+                    failed_steps.append(("total_field", str(exc)))
                     logger.warning("Field synthesis failed: %s", exc)
 
         else:
-            logger.warning(
-                "Unknown geometry type '%s'; attempting round processing.",
-                self._effective_type,
+            data_dir = self.loader._resolve_data_dir()
+            raise PostProcessError(
+                f"Cannot determine geometry type for {data_dir}. "
+                "Expected round/, magn/, or elec/ subdirectory."
             )
-            try:
-                results["monopole"] = self.process_wake_monopole()
-            except Exception:
-                pass
-            try:
-                results["dipole"] = self.process_wake_dipole()
-            except Exception:
-                pass
 
         # Try particle processing if available
         data_dir = self.loader._resolve_data_dir()
@@ -711,6 +712,15 @@ class PostProcessor:
             try:
                 results["particles"] = self.load_particles()
             except Exception as exc:
+                failed_steps.append(("particles", str(exc)))
                 logger.warning("Particle processing failed: %s", exc)
+
+        if failed_steps and not any(
+            results.get(key) is not None
+            for key in ("monopole", "dipole", "recta_wake", "total_field", "particles")
+        ):
+            raise PostProcessError(
+                f"All postprocessing steps failed: {failed_steps}"
+            )
 
         return results

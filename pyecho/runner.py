@@ -121,14 +121,31 @@ class ECHO2DRunner:
             self.executable = self._auto_detect()
 
     def kill(self) -> None:
-        """Kill the currently running ECHO2D subprocess, if any."""
+        """Kill the currently running ECHO2D subprocess, if any.
+
+        Failures are logged rather than silently swallowed, and the
+        internal process reference is only cleared once the process has
+        actually terminated so a failed kill can be retried.
+        """
         if self._current_process is not None:
+            proc = self._current_process
+            pid = getattr(proc, "pid", None)
             try:
-                self._current_process.kill()
-                self._current_process.wait(timeout=5)
-            except Exception:
-                pass
-            self._current_process = None
+                proc.kill()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    "Timeout waiting for ECHO2D process (pid=%s) to terminate",
+                    pid,
+                )
+            except OSError as exc:
+                logger.error(
+                    "Failed to kill ECHO2D process (pid=%s): %s", pid, exc
+                )
+            # Only drop the reference if the process actually terminated;
+            # otherwise keep it so a subsequent kill() can retry.
+            if getattr(proc, "poll", None) is not None and proc.poll() is not None:
+                self._current_process = None
 
     @property
     def executable(self) -> str:
@@ -268,6 +285,7 @@ class ECHO2DRunner:
             If ECHO2D returns a non-zero exit code.
         """
         t_start = time.monotonic()
+        deadline = t_start + timeout if timeout is not None else None
 
         # 1. Write input file if params provided
         if params is not None:
@@ -324,6 +342,19 @@ class ECHO2DRunner:
         try:
             assert process.stdout is not None
             for line in process.stdout:
+                # Check the deadline mid-loop: a hung process may keep
+                # stdout open without ever producing output, which would
+                # otherwise defeat the wait(timeout=...) below.
+                if deadline is not None and time.monotonic() > deadline:
+                    process.kill()
+                    process.wait()
+                    raise SimulationTimeoutError(
+                        f"ECHO2D timed out after {timeout} s",
+                        timeout=timeout,
+                        elapsed=time.monotonic() - t_start,
+                        work_dir=self.work_dir,
+                        executable=self.executable,
+                    )
                 line = line.rstrip("\n")
                 stdout_lines.append(line)
 
@@ -425,6 +456,7 @@ class ECHO2DRunner:
 
         """
         t_start = time.monotonic()
+        deadline = t_start + timeout if timeout is not None else None
 
         if params is not None:
             if not self.work_dir.is_dir():
@@ -463,6 +495,8 @@ class ECHO2DRunner:
                 executable=self.executable,
                 searched_paths=searched,
             ) from exc
+        # Track the live process so kill() can interrupt it mid-stream.
+        self._current_process = process
 
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
@@ -470,6 +504,19 @@ class ECHO2DRunner:
         try:
             assert process.stdout is not None
             for line in process.stdout:
+                # Check the deadline mid-loop: a hung process may keep
+                # stdout open without ever producing output, which would
+                # otherwise defeat the wait(timeout=...) below.
+                if deadline is not None and time.monotonic() > deadline:
+                    process.kill()
+                    process.wait()
+                    raise SimulationTimeoutError(
+                        f"ECHO2D timed out after {timeout} s",
+                        timeout=timeout,
+                        elapsed=time.monotonic() - t_start,
+                        work_dir=self.work_dir,
+                        executable=self.executable,
+                    )
                 line = line.rstrip("\n")
                 stdout_lines.append(line)
 
@@ -650,13 +697,13 @@ class ECHO2DRunner:
             if cz is not None:
                 currents_z = cz[1]
         except Exception:
-            pass
+            logger.warning("Failed to parse Iz0.txt current file", exc_info=True)
         try:
             cr = loader.load_currents_radial()
             if cr is not None:
                 currents_r = cr[1]
         except Exception:
-            pass
+            logger.warning("Failed to parse radial current file", exc_info=True)
 
         # Load particles
         particles = loader.load_particles()
@@ -750,7 +797,7 @@ class BatchRunner:
         self,
         parallel: int = 1,
         executable: str | None = None,
-    ) -> list[SimulationResult]:
+    ) -> list[SimulationResult | None]:
         """Run all parameter combinations.
 
         Parameters
@@ -762,8 +809,10 @@ class BatchRunner:
 
         Returns
         -------
-        list[SimulationResult]
+        list[SimulationResult | None]
             Results in the same order as the parameter combinations.
+            A failed run yields ``None`` (with an error logged) so the
+            rest of the batch still completes.
         """
         import itertools
 
@@ -775,7 +824,7 @@ class BatchRunner:
         param_names = [name for name, _ in self._scans]
         value_lists = [values for _, values in self._scans]
 
-        results: list[SimulationResult] = []
+        results: list[SimulationResult | None] = []
 
         for idx, combo in enumerate(itertools.product(*value_lists)):
             run_dir = self.work_root / f"run_{idx}"
@@ -792,7 +841,14 @@ class BatchRunner:
             )
 
             runner = ECHO2DRunner(run_dir, executable)
-            result = runner.run(run_params)
-            results.append(result)
+            try:
+                result = runner.run(run_params)
+                results.append(result)
+            except Exception as exc:
+                logger.error(
+                    "Batch run %d/%d failed: %s", idx + 1,
+                    len(list(itertools.product(*value_lists))), exc,
+                )
+                results.append(None)
 
         return results

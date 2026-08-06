@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/yuxinwu919/pyecho-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/yuxinwu919/pyecho-cli/actions/workflows/ci.yml)
 ![Version](https://img.shields.io/badge/version-0.3.0-blue)
+![Development Status](https://img.shields.io/badge/Development%20Status-Beta-yellow)
 
 Python CLI toolkit for the [ECHO2D](https://echo4d.de) electromagnetic wakefield solver.
 
@@ -35,15 +36,15 @@ echo2d example round-collimator  # run N1 with one command
 
 ```
 echo2d
-├── project      init / list / info / templates / migrate
-├── config       generate / validate / show
+├── project      init / templates / examples / list / info / path / migrate
+├── config       generate / validate / show / generate-bunch / validate-bunch
 ├── geometry     create (pipe/dlw/corrugated) / validate / show / info
-├── run          new / start / list / info / single / converge
+├── run          new / start / list / info / single / batch / converge
 ├── postprocess  wake / impedance / field / particles / wake-monitor /
-│                beam-moments / report / all
+│                beam-moments / all / report
 ├── visualize    wake / impedance / compare / modes / field
 ├── export       hdf5 / csv
-├── compare      runs
+├── compare      projects / runs
 ├── system       info / detect / check
 ├── example      round-collimator / flat-absorber / tesla-cavity / pohang-dechirper
 └── workspace
@@ -104,7 +105,8 @@ Runs ECHO2D at three mesh resolutions and checks loss-factor convergence (<5%).
 
 - Python ≥ 3.10
 - ECHO2D solver binary (auto-detected from `ECHO2D_v3_5/Codes/`)
-- Dependencies: numpy, scipy, matplotlib, pydantic, pyyaml, h5py, typer, rich
+- Dependencies: numpy, scipy, matplotlib, pydantic, pyyaml, h5py, typer, rich,
+  jinja2, pint, tqdm
 
 ## Install for Development
 
@@ -118,7 +120,7 @@ python tests/comprehensive_test/scripts/run_full_test.py --quick
 
 The project follows a test-driven workflow:
 
-- **pytest** — 552 unit tests covering all CLI commands, the ECHO2D file
+- **pytest** — 650 unit tests covering all CLI commands, the ECHO2D file
   parsers, the `mathlib` numerics, and end-to-end round/recta runs
 - **GitHub Actions** — CI runs the full test suite on every push and PR
 - **mypy** — static type checking over the `pyecho` package
@@ -127,7 +129,7 @@ The project follows a test-driven workflow:
 ### Testing
 
 ```bash
-pytest tests/             # run all tests (552 tests)
+pytest tests/             # run all tests (650 tests)
 pytest tests/test_mathlib.py -v  # specific module
 ```
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 (2026-08-07)
+## [0.3.0] — 2026-08-07
 
 ### Breaking Changes
 - flat→recta naming unification: FlatWakeResult→RectaWakeResult, FlatGeometry→RectaGeometry, process_flat_wake→process_recta_wake, plot_flat_wake→plot_recta_wake

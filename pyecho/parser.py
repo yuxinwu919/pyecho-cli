@@ -754,8 +754,27 @@ class OutputLoader:
         elif "time_type" in header:
             time_type = header["time_type"]
         else:
-            # Fallback: first header line "time=z" or "time=s"
-            time_type = "z"
+            # Fallback: try to detect from the first header line,
+            # "time=s" (s-type) or "time=z" (z-type).
+            first_line = ""
+            try:
+                with filepath.open("r", encoding="utf-8") as fh:
+                    for _line in fh:
+                        if _line.strip().startswith("%"):
+                            first_line = _line
+                            break
+            except OSError:
+                first_line = ""
+            if "time=s" in first_line.lower() or "time = s" in first_line.lower():
+                time_type = "s"
+            elif "time=z" in first_line.lower() or "time = z" in first_line.lower():
+                time_type = "z"
+            else:
+                time_type = "z"
+                logger.warning(
+                    "Monitor %s: time_type not detected; assuming 'z'",
+                    filepath.name,
+                )
 
         # ---- Build coordinate arrays ----
         T = np.arange(kt, dtype=np.float64) * ht + t0
@@ -892,7 +911,12 @@ class OutputLoader:
 
         np_val = struct.unpack_from("<d", raw, 0)[0]
         q0 = struct.unpack_from("<d", raw, 8)[0]
-        Np = int(np_val)
+        try:
+            Np = int(np_val)
+        except (ValueError, OverflowError) as exc:
+            raise ParserError(
+                f"Cannot parse particle count from {filepath}: {np_val!r}"
+            ) from exc
 
         if Np <= 0:
             logger.warning("particles.out reports Np=%d", Np)
