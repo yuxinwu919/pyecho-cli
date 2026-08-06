@@ -96,7 +96,7 @@ from pyecho.cli._helpers import (  # noqa: E402, F401
     _resolve_plot_data_dir,
     _run_auto_fix,
     _save_monitor_total,
-    _save_wake_flat,
+    _save_wake_recta,
     _save_wake_round_data,
     _serialize_geo,
     _show_welcome,

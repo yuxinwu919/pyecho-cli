@@ -244,7 +244,7 @@ class RoundGeometry:
         logger.info("Geometry saved to %s (%d segments)", filepath, len(self.segments))
 
 
-class FlatGeometry:
+class RectaGeometry:
     """Build a rectangular (flat) ECHO2D geometry.
 
     Similar API to :class:`RoundGeometry` but uses *y* (vertical)
@@ -252,7 +252,7 @@ class FlatGeometry:
 
     Usage::
 
-        >>> geo = FlatGeometry()
+        >>> geo = RectaGeometry()
         >>> geo.pipe(half_gap=0.5, length=10.0)
         >>> geo.save("flat_geometry.txt")
     """
@@ -274,7 +274,7 @@ class FlatGeometry:
         half_gap: float,
         length: float,
         z_start: float | None = None,
-    ) -> FlatGeometry:
+    ) -> RectaGeometry:
         """Add a straight rectangular pipe section.
 
         Parameters
@@ -288,7 +288,7 @@ class FlatGeometry:
 
         Returns
         -------
-        FlatGeometry
+        RectaGeometry
             Self for method chaining.
         """
         if z_start is None:
@@ -312,7 +312,7 @@ class FlatGeometry:
         self,
         half_gap: float,
         length: float,
-    ) -> FlatGeometry:
+    ) -> RectaGeometry:
         """Add a vertical step in the rectangular geometry.
 
         Parameters
@@ -324,7 +324,7 @@ class FlatGeometry:
 
         Returns
         -------
-        FlatGeometry
+        RectaGeometry
             Self for method chaining.
         """
         z_start = self._current_z
@@ -359,7 +359,7 @@ class FlatGeometry:
         y_start: float,
         y_end: float,
         length: float,
-    ) -> FlatGeometry:
+    ) -> RectaGeometry:
         """Add a linearly tapered section.
 
         Parameters
@@ -373,7 +373,7 @@ class FlatGeometry:
 
         Returns
         -------
-        FlatGeometry
+        RectaGeometry
             Self for method chaining.
         """
         z_start = self._current_z

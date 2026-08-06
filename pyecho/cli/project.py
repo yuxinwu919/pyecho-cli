@@ -151,13 +151,13 @@ def project_templates() -> None:
 
     descriptions = {
         "round_collimator": "Rotationally symmetric collimator (round)",
-        "flat_absorber": "Rectangular photon absorber (flat)",
+        "flat_absorber": "Rectangular photon absorber (recta)",
         "tesla_cavity": "TESLA 9-cell superconducting cavity",
         "dlw": "Dielectric lined waveguide (DLW)",
     }
 
     for t in templates:
-        gtype = "Flat" if "flat" in t or t == "dlw" else "Round"
+        gtype = "Recta" if "flat" in t or t == "dlw" else "Round"
         table.add_row(t, gtype, descriptions.get(t, "—"))
 
     console.print(table)
@@ -178,7 +178,7 @@ def project_examples() -> None:
     for t in templates:
         if "flat" in t:
             gtype = "Rectangular"
-            desc = "Flat/rectangular geometry example"
+            desc = "Rectangular geometry example"
         else:
             gtype = "Round"
             desc = "Rotationally symmetric geometry example"

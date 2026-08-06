@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pyecho.datamodel import SimulationResult, RoundWakeResult, FlatWakeResult
+    from pyecho.datamodel import SimulationResult, RoundWakeResult, RectaWakeResult
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ def quick_postprocess(
     output_dir: str,
     geometry: str | None = None,
     **kwargs,
-) -> "RoundWakeResult | FlatWakeResult":
+) -> "RoundWakeResult | RectaWakeResult":
     """One-line postprocessing of ECHO2D output.
 
     Auto-detects the geometry type and applies the appropriate
@@ -157,7 +157,7 @@ def quick_postprocess(
 
     Returns
     -------
-    RoundWakeResult or FlatWakeResult
+    RoundWakeResult or RectaWakeResult
         Processed wake result.
     """
     from pyecho.parser import OutputLoader
@@ -298,19 +298,19 @@ def _postprocess_round(
 def _postprocess_flat(
     loader,
     **kwargs,
-) -> "FlatWakeResult":
+) -> "RectaWakeResult":
     """Post-process flat-geometry results.
 
     Uses the full flat-geometry pipeline (Wcc/Wss assembly, mode
     summation, and cumulative integration) to produce Wlong, Wquad,
     and Wdipole in their correct physical units.
     """
-    from pyecho.datamodel import FlatWakeResult
+    from pyecho.datamodel import RectaWakeResult
     from pyecho.postprocess import PostProcessor
     import numpy as np
 
     pp = PostProcessor(loader)
-    result = pp.process_flat_wake()
+    result = pp.process_recta_wake()
 
     s = result["s"]
     Wlong = result["Wlong"]
@@ -326,7 +326,7 @@ def _postprocess_flat(
     kick_quad = -_trapz(Wquad, s)
     kick_dipole = -_trapz(Wdipole, s)
 
-    return FlatWakeResult(
+    return RectaWakeResult(
         s=s,
         Wlong=Wlong,
         Wquad=Wquad,

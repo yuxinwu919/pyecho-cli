@@ -955,7 +955,7 @@ def _add_bunch_and_loss_factors(
 # ---------------------------------------------------------------------------
 
 
-def process_flat_wake(
+def process_recta_wake(
     magn_dir: str | Path,
     elec_dir: str | Path | None = None,
     n_modes_cc: int = 15,

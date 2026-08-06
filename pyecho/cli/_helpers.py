@@ -873,7 +873,7 @@ def _save_wake_round_data(
     np.savetxt(str(out_path), data, header=header, fmt="%.8e")
 
 
-def _save_wake_flat(result: Any, out_dir: Path) -> None:
+def _save_wake_recta(result: Any, out_dir: Path) -> None:
     """Save recta (rectangular) wake result to disk.
 
     Writes

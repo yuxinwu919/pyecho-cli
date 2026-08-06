@@ -1,7 +1,7 @@
 """High-level post-processing dispatcher.
 
 Provides the :class:`PostProcessor` class that auto-detects the
-geometry type (round vs flat) from the ECHO2D output directory
+geometry type (round vs recta) from the ECHO2D output directory
 structure and applies the correct processing pipeline.
 
 Usage::
@@ -11,8 +11,8 @@ Usage::
     >>> wake = pp.process_wake_monopole()
     >>> print(f"Loss factor: {wake.loss_factor:.4f} V/pC")
 
-    >>> # Flat geometry
-    >>> pp2 = PostProcessor("path/to/flat_output")
+    >>> # Recta geometry
+    >>> pp2 = PostProcessor("path/to/recta_output")
     >>> result = pp2.process_all()
     >>> print(f"Wlong peak: {result['Wlong'].max():.2f} V/pC")
 """
@@ -29,7 +29,7 @@ from pyecho.errors import MissingOutputError, PostProcessError
 from pyecho.parser import find_wake_file, list_wake_files
 
 if TYPE_CHECKING:
-    from pyecho.datamodel import WakeResult, FlatWakeResult, SimulationResult
+    from pyecho.datamodel import WakeResult, RectaWakeResult, SimulationResult
     from pyecho.parser import OutputLoader
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ class PostProcessor:
     """ECHO2D post-processor with automatic geometry detection.
 
     Analyses the output directory structure to determine whether the
-    simulation used round (axisymmetric) or flat (rectangular) geometry,
+    simulation used round (axisymmetric) or recta (rectangular) geometry,
     then dispatches to the appropriate wake processing sub-module.
 
     Parameters
@@ -55,7 +55,7 @@ class PostProcessor:
     loader : OutputLoader
         The underlying output file loader.
     geometry_type : str
-        Detected geometry type: ``"round"``, ``"flat"`` (magn+elec),
+        Detected geometry type: ``"round"``, ``"recta"`` (magn+elec),
         ``"magn"``, ``"elec"``, or ``"unknown"``.
 
     Examples
@@ -220,7 +220,7 @@ class PostProcessor:
     # Flat geometry processing
     # ------------------------------------------------------------------
 
-    def process_flat_wake(
+    def process_recta_wake(
         self,
         n_modes_cc: int = 0,
         n_modes_ss: int = 0,
@@ -243,21 +243,21 @@ class PostProcessor:
         dict
             Keys: ``wcc``, ``wss``, ``s``, ``Wlong``, ``Wquad``,
             ``Wdipole``, ``D``, ``k_cc``, ``k_ss``.
-            See :func:`pyecho.postprocess.wakes.flat.process_flat_wake`.
+            See :func:`pyecho.postprocess.wakes.recta.process_recta_wake`.
 
         Raises
         ------
         PostProcessError
-            If no flat geometry data is found.
+            If no recta geometry data is found.
         """
         if self._effective_type not in ("recta",):
             raise PostProcessError(
-                f"process_flat_wake requires recta geometry, "
+                f"process_recta_wake requires recta geometry, "
                 f"but detected type is '{self._effective_type}'."
             )
 
-        from pyecho.postprocess.wakes.flat import (
-            process_flat_wake,
+        from pyecho.postprocess.wakes.recta import (
+            process_recta_wake,
             assemble_wcc,
             assemble_wss,
             compute_wake_long_quad,
@@ -315,11 +315,11 @@ class PostProcessor:
         if magn_dir is not None and elec_dir is not None:
             # Full pipeline: both Wcc (magn) and Wss (elec)
             logger.info(
-                "Processing flat wakes: magn=%s, elec=%s, "
+                "Processing recta wakes: magn=%s, elec=%s, "
                 "n_modes_cc=%d, n_modes_ss=%d",
                 magn_dir, elec_dir, n_modes_cc, n_modes_ss,
             )
-            return process_flat_wake(
+            return process_recta_wake(
                 magn_dir=magn_dir,
                 elec_dir=elec_dir,
                 n_modes_cc=n_modes_cc,
@@ -328,7 +328,7 @@ class PostProcessor:
         elif magn_dir is not None:
             # magn-only: Wlong + Wquad, zero Wdipole
             logger.info(
-                "Processing flat wakes (magn-only): %s, n_modes=%d",
+                "Processing recta wakes (magn-only): %s, n_modes=%d",
                 magn_dir, n_modes_cc,
             )
             return self._partial_magn_only(magn_dir, n_modes_cc)
@@ -336,7 +336,7 @@ class PostProcessor:
             # elec-only: Wdipole, zero Wlong/Wquad
             assert elec_dir is not None  # both None handled above
             logger.info(
-                "Processing flat wakes (elec-only): %s, n_modes=%d",
+                "Processing recta wakes (elec-only): %s, n_modes=%d",
                 elec_dir, n_modes_ss,
             )
             return self._partial_elec_only(elec_dir, n_modes_ss)
@@ -344,7 +344,7 @@ class PostProcessor:
     def _partial_magn_only(self, magn_dir: Path, n_modes: int) -> dict:
         """Compute Wlong and Wquad from magn data only; Wdipole = 0."""
         import numpy as np
-        from pyecho.postprocess.wakes.flat import (
+        from pyecho.postprocess.wakes.recta import (
             assemble_wcc, compute_wake_long_quad,
         )
 
@@ -358,7 +358,7 @@ class PostProcessor:
     def _partial_elec_only(self, elec_dir: Path, n_modes: int) -> dict:
         """Compute Wdipole from elec data only; Wlong = Wquad = 0."""
         import numpy as np
-        from pyecho.postprocess.wakes.flat import assemble_wss
+        from pyecho.postprocess.wakes.recta import assemble_wss
         from pyecho.mathlib.integration import integr_tr
 
         wss = assemble_wss(elec_dir, n_modes=n_modes)
@@ -458,7 +458,7 @@ class PostProcessor:
                 missing_files=["elec/"],
             )
 
-        from pyecho.postprocess.wakes.flat import (
+        from pyecho.postprocess.wakes.recta import (
             assemble_wcc, assemble_wss, compute_wake_off_axis,
         )
 
@@ -524,7 +524,7 @@ class PostProcessor:
     ) -> np.ndarray:
         """Synthesise total field from modal monitor files.
 
-        Only valid for flat geometry (requires magn/ directory with
+        Only valid for recta geometry (requires magn/ directory with
         ``Monitor_mXX_NYY.txt`` files).
 
         Parameters
@@ -679,7 +679,7 @@ class PostProcessor:
 
         elif self._effective_type == "recta":
             logger.info("Running full recta-geometry post-processing...")
-            results["recta_wake"] = self.process_flat_wake()
+            results["recta_wake"] = self.process_recta_wake()
 
             # Try field synthesis if monitors exist
             monitors = self.loader.list_monitors()

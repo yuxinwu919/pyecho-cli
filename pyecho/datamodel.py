@@ -53,7 +53,7 @@ class WakeResult:
 
 
 @dataclass
-class FlatWakeResult:
+class RectaWakeResult:
     """Complete wake result for recta (rectangular) geometry.
 
     In a rectangular structure of constant width, the longitudinal

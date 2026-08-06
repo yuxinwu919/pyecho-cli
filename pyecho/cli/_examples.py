@@ -125,9 +125,9 @@ def _print_example_summary(
     ]
 
     if result is not None:
-        from pyecho.datamodel import FlatWakeResult, WakeResult
+        from pyecho.datamodel import RectaWakeResult, WakeResult
 
-        if isinstance(result, FlatWakeResult):
+        if isinstance(result, RectaWakeResult):
             lines.append("")
             lines.append(
                 f"  Longitudinal loss: [cyan]{result.loss_long:.6f} V/pC[/cyan]"

@@ -7,7 +7,7 @@ analysis, and particle phase-space processing.
 Submodules
 ----------
 wakes/round : Round (axisymmetric) geometry wake processing
-wakes/flat  : Recta (rectangular) geometry wake processing
+wakes/recta : Recta (rectangular) geometry wake processing
 fields      : Field monitor extraction & synthesis
 particles   : Particle loading, statistics & format conversion
 core        : :class:`PostProcessor` — high-level dispatcher
@@ -43,7 +43,7 @@ from pyecho.postprocess.wakes import (
     compute_wake_off_axis,
     compute_wake_tm_tq_td,
     compute_wake_zy,
-    process_flat_wake,
+    process_recta_wake,
     process_wake_dipole,
     process_wake_monopole,
 )
@@ -54,7 +54,7 @@ __all__ = [
     # Wakes — round
     "process_wake_monopole",
     "process_wake_dipole",
-    # Wakes — flat
+    # Wakes — recta
     "assemble_wcc",
     "assemble_wss",
     "compute_wake_long_quad",
@@ -62,7 +62,7 @@ __all__ = [
     "compute_wake_zy",
     "compute_wake_off_axis",
     "compute_wake_tm_tq_td",
-    "process_flat_wake",
+    "process_recta_wake",
     # Fields
     "extract_field_at_point",
     "process_field_monitor",

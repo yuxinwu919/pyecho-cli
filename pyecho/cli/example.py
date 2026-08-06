@@ -312,7 +312,7 @@ def example_cmd(
         task = progress.add_task("Postprocessing wake data...", total=None)
         try:
             from pyecho.api import quick_postprocess
-            from pyecho.datamodel import FlatWakeResult, RoundWakeResult
+            from pyecho.datamodel import RectaWakeResult, RoundWakeResult
 
             result = quick_postprocess(str(run_dir), geometry=p["geometry_type"])
             progress.update(
@@ -340,13 +340,13 @@ def example_cmd(
             wake_out = run_dir / "processed" / "wake"
             wake_out.mkdir(parents=True, exist_ok=True)
 
-            if isinstance(result, FlatWakeResult):
-                from pyecho.visualize import plot_flat_wake
+            if isinstance(result, RectaWakeResult):
+                from pyecho.visualize import plot_recta_wake
                 data_dir = _resolve_plot_data_dir(str(run_dir))
                 offset = _read_offset_from_dir(data_dir)
                 from pyecho.parser import load_bunch_profile
                 _, bunch = load_bunch_profile(data_dir, offset, result.s)
-                fig, axes = plot_flat_wake(result, bunch=bunch)
+                fig, axes = plot_recta_wake(result, bunch=bunch)
                 save_path = wake_out / "wake_plot.png"
                 fig.savefig(str(save_path), dpi=150, bbox_inches="tight")
                 console.print(f"  [dim]Plot saved to {save_path}[/dim]")

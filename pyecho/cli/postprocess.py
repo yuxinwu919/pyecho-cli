@@ -25,7 +25,7 @@ from pyecho.cli._helpers import (
     _read_offset_from_dir,
     _resolve_plot_data_dir,
     _save_monitor_total,
-    _save_wake_flat,
+    _save_wake_recta,
     _save_wake_round_data,
     _try_update_processed_manifest,
 )
@@ -90,7 +90,7 @@ def postprocess_wake(
         raise typer.Exit(1)
 
     # Display summary
-    from pyecho.datamodel import RoundWakeResult, FlatWakeResult
+    from pyecho.datamodel import RoundWakeResult, RectaWakeResult
 
     # Resolve processed/ output directory
     out_path = Path(output_dir).resolve()
@@ -134,7 +134,7 @@ def postprocess_wake(
         (wake_out / "summary.txt").write_text("\n".join(summary_lines), encoding="utf-8")
         # Update run manifest
         _try_update_processed_manifest(out_path, loss_long=result.loss_long, peak=result.peak)
-    elif isinstance(result, FlatWakeResult):
+    elif isinstance(result, RectaWakeResult):
         summary_table = Table(title="✓ Wake processed — Rectangular Wake Result")
         summary_table.add_column("Quantity")
         summary_table.add_column("Value", justify="right")
@@ -144,7 +144,7 @@ def postprocess_wake(
         summary_table.add_row("Kick (dipole)", _fmt_factor(result.kick_dipole), "V/pC/mm")
         console.print(summary_table)
         # Save processed data
-        _save_wake_flat(result, wake_out)
+        _save_wake_recta(result, wake_out)
         # Update run manifest
         _try_update_processed_manifest(
             out_path,
@@ -157,13 +157,13 @@ def postprocess_wake(
 
     if plot:
         import matplotlib.pyplot as plt
-        if isinstance(result, FlatWakeResult):
-            from pyecho.visualize import plot_flat_wake
+        if isinstance(result, RectaWakeResult):
+            from pyecho.visualize import plot_recta_wake
             data_dir = _resolve_plot_data_dir(output_dir)
             offset = _read_offset_from_dir(data_dir)
             from pyecho.parser import load_bunch_profile
             _, bunch = load_bunch_profile(data_dir, offset, result.s)
-            fig, axes = plot_flat_wake(result, bunch=bunch)
+            fig, axes = plot_recta_wake(result, bunch=bunch)
             if output:
                 save_path = f"{output}_wake.png"
             else:
@@ -1016,7 +1016,7 @@ def postprocess_all(
                     f"peak={wake_result.peak:.4f} V/pC"
                 )
             else:
-                _save_wake_flat(wake_result, wake_out)
+                _save_wake_recta(wake_result, wake_out)
                 console.print(
                     f"  [green]✓[/green] Recta wake: "
                     f"loss_long={wake_result.loss_long:.4f} V/pC, "
@@ -1203,7 +1203,7 @@ def postprocess_report(
                  "unit": "V/pC/m", "desc": "transverse kick, m=1"}
             )
     else:
-        geometry_label = "Rectangular (flat)"
+        geometry_label = "Rectangular"
         geometry = "recta"
         factor_rows = [
             {"label": "Loss factor (longitudinal)", "value": result.loss_long,
@@ -1437,7 +1437,7 @@ def _plot_wake_result(wake_result: Any, geo_type: str, wake_out: Path) -> None:
             from pyecho.visualize import plot_round_wake
             fig, _ = plot_round_wake(wake_result)
         else:
-            from pyecho.visualize import plot_flat_wake
+            from pyecho.visualize import plot_recta_wake
             data_dir = wake_out.parent.parent  # run dir
             for sub in ("magn", "elec"):
                 cand = data_dir / sub
@@ -1448,7 +1448,7 @@ def _plot_wake_result(wake_result: Any, geo_type: str, wake_out: Path) -> None:
             # Try to load bunch from magn/ directory
             magn_dir = data_dir / "magn" if (data_dir / "magn").is_dir() else data_dir
             _, bunch = load_bunch_profile(magn_dir, 0, wake_result.s)
-            fig, _ = plot_flat_wake(wake_result, bunch=bunch)
+            fig, _ = plot_recta_wake(wake_result, bunch=bunch)
 
         fig.savefig(str(wake_out / "wake_plot.png"), dpi=150, bbox_inches="tight")
         plt.close(fig)

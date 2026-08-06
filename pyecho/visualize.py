@@ -251,10 +251,10 @@ def plot_round_wake(
 
 
 # ---------------------------------------------------------------------------
-# plot_flat_wake
+# plot_recta_wake
 # ---------------------------------------------------------------------------
 
-def plot_flat_wake(
+def plot_recta_wake(
     result: Any,
     *,
     title: str = "",
@@ -265,7 +265,7 @@ def plot_flat_wake(
 
     Parameters
     ----------
-    result : FlatWakeResult
+    result : RectaWakeResult
         Result from :func:`pyecho.api.quick_postprocess` with rectangular geometry.
     title : str
         Overall figure title.
@@ -758,7 +758,7 @@ def _extract_s_w(
     if hasattr(obj, "s") and hasattr(obj, "W"):
         return obj.s, obj.W
 
-    # FlatWakeResult — use longitudinal component
+    # RectaWakeResult — use longitudinal component
     if hasattr(obj, "s") and hasattr(obj, "Wlong"):
         return obj.s, obj.Wlong
 
