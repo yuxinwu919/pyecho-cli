@@ -19,6 +19,10 @@ env/
 # IDE
 .vscode/
 
+# Claude Code assistant
+.claude/
+CLAUDE.md
+
 # ECHO2D temp
 .echo2d_temp/
 
@@ -40,3 +44,4 @@ coverage.xml
 *.db
 tests/comprehensive_test/output/
 tests/手动测试/
+_cli_monolithic_bak.py
