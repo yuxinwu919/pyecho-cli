@@ -151,6 +151,14 @@ class InitialFieldGenerator:
         nr = int(self.pipe_radius / self.step_y) + 1
         self.nr = nr
 
+        if nz < 3 or nr < 3:
+            raise PreprocessError(
+                "Mesh too small for the Poisson solver: "
+                f"nz={nz}, nr={nr}; need nz >= 3 and nr >= 3 "
+                "(increase mesh_length or pipe_radius / reduce step).",
+                input_file=particle_file,
+            )
+
         z_min = mesh_position_z - (nz / 2) * self.step_z
         z_max = mesh_position_z + (nz / 2) * self.step_z
 
@@ -178,12 +186,9 @@ class InitialFieldGenerator:
         # ---- 6. Lorentz transform to lab frame ----
         from pyecho.mathlib import c, Z0
 
-        gamma = 1.0 / np.sqrt(1.0 - 1.0**2)  # β ≈ 1 for ultra-relativistic
-        # For β = 1, use large gamma approximation
-        # In practice ECHO2D uses β=1 beam, so we treat gamma as large
-        # and use: Er_lab ≈ Er (for β=1, the transverse field is
-        # compressed in the lab frame but ECHO2D handles this internally)
-        # Here we use the finite gamma for correctness
+        # For β = 1, use a large-but-finite gamma approximation.
+        # ECHO2D uses an ultra-relativistic beam, so in the lab frame the
+        # transverse field is compressed but the solver handles this.
         beta = 0.999999  # effectively 1
         gamma = 1.0 / np.sqrt(1.0 - beta**2)
 
@@ -356,58 +361,78 @@ class InitialFieldGenerator:
         """
         from pyecho.mathlib import eps0
 
+        # Red-black (checkerboard) successive over-relaxation, fully
+        # vectorised with numpy so the two-colour sweeps update every
+        # interior cell in one slice operation.
         phi: np.ndarray = np.zeros((nz, nr), dtype=np.float64)
-        omega = 1.8  # SOR relaxation parameter
+        omega = 1.8  # SOR relaxation parameter (< 2 for convergence)
 
         # Precompute r coordinates at cell centres
         r_vals = (np.arange(nr, dtype=np.float64) + 0.5) * hr
         # Avoid division by zero at r=0
         r_vals[0] = 0.5 * hr
-
-        max_iter = 50000
-        tol = 1e-10
+        rp = r_vals + 0.5 * hr   # outer cell-face radius
+        rm = r_vals - 0.5 * hr   # inner cell-face radius (0 on axis)
+        rm[0] = 0.0
+        crp = rp / r_vals        # weight of phi[i, j + 1]
+        crm = rm / r_vals        # weight of phi[i, j - 1] (0 on axis)
+        crm[0] = 0.0
 
         inv_eps0 = 1.0 / eps0
+        hz2, hr2 = hz * hz, hr * hr
+        denom = 2.0 * (hz2 + hr2)
+        # At the iteration's fixed point the update satisfies
+        #   d²φ/dz² + d²φ/dr² = -src,
+        # so to solve ∇²φ = -ρ/ε₀ we must add src = +ρ/ε₀ here.
+        src = charge * inv_eps0
+
+        max_iter = 50000
+        tol = 1e-10  # relative convergence tolerance
+
+        # Interior indices (1 .. nz-2) x (1 .. nr-2); the outer wall
+        # (j = nr-1) and the z ends (i = 0, nz-1) are Dirichlet φ = 0.
+        i_idx = np.arange(1, nz - 1)
+        j_idx = np.arange(1, nr - 1)
+        i_g: np.ndarray
+        j_g: np.ndarray
+        i_g, j_g = np.meshgrid(i_idx, j_idx, indexing="ij")
+        parity = (i_g + j_g) % 2          # red / black checkerboard
+        crp_int = crp[j_idx][None, :]
+        crm_int = crm[j_idx][None, :]
+        src_int = src[np.s_[1:nz - 1, 1:nr - 1]]
+
+        interior = phi[np.s_[1:nz - 1, 1:nr - 1]]  # write-through view
 
         for iteration in range(max_iter):
-            phi_old = phi.copy()
+            old = interior.copy()
+            for colour in (0, 1):
+                mask = parity == colour
+                # Gather the four (opposite-colour) neighbours.
+                up = phi[i_idx - 1][:, j_idx]
+                down = phi[i_idx + 1][:, j_idx]
+                left = phi[i_idx][:, j_idx - 1]
+                right = phi[i_idx][:, j_idx + 1]
+                numerator = (
+                    hr2 * (up + down)
+                    + hz2 * (crp_int * right + crm_int * left)
+                    + hz2 * hr2 * src_int
+                )
+                new = (1.0 - omega) * interior + omega * numerator / denom
+                interior[mask] = new[mask]
 
-            for i in range(1, nz - 1):
-                for j in range(1, nr - 1):
-                    # d²φ/dz²
-                    d2z = (phi[i + 1, j] - 2.0 * phi[i, j] + phi[i - 1, j]) / (hz * hz)
-
-                    # (1/r) d/dr (r dφ/dr)
-                    r = r_vals[j]
-                    rp = r_vals[j] + 0.5 * hr
-                    rm = r_vals[j] - 0.5 * hr
-                    if rm < 0:
-                        rm = 0.0
-
-                    d2r = (
-                        rp * (phi[i, j + 1] - phi[i, j])
-                        - rm * (phi[i, j] - phi[i, j - 1])
-                    ) / (r * hr * hr)
-
-                    # Source term
-                    src = -charge[i, j] * inv_eps0
-
-                    # SOR update
-                    phi_new = (
-                        (d2z + d2r - src) * (hz * hz * hr * hr)
-                        / (2.0 * (hz * hz + hr * hr))
-                        + phi[i, j]
-                    )
-                    phi[i, j] = (1.0 - omega) * phi[i, j] + omega * phi_new
-
-            # Check convergence
-            diff: float = np.max(np.abs(phi - phi_old))
+            # Local-relative change criterion: each cell's sweep change is
+            # measured against its own magnitude.  A global scale (e.g.
+            # max |phi|) would over-tolerate the point-charge spike and
+            # under-resolve the smooth field far from it.
+            diff: float = float(
+                np.max(np.abs(interior - old) / (1.0 + np.abs(interior)))
+            )
             if diff < tol:
                 logger.info("Poisson solver converged in %d iterations", iteration + 1)
                 break
         else:
             logger.warning(
-                "Poisson solver did not converge after %d iterations (max diff=%.3e)",
+                "Poisson solver did not converge after %d iterations (rel diff=%.3e)",
                 max_iter, diff,
             )
 

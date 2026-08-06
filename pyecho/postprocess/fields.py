@@ -132,6 +132,14 @@ def extract_field_at_point(
                 idx_hi = min(idx_lo + 1, len(Z) - 1)
                 frac = interp_z - idx_lo
                 return cast(np.ndarray, F[:, idx_lo] * (1 - frac) + F[:, idx_hi] * frac)
+            elif t is not None:
+                # t-only: interpolate at the median z (mirrors the (nt, nr)
+                # branch which uses median(r))
+                interp = RegularGridInterpolator(
+                    (T, Z), F, bounds_error=False, fill_value=0.0
+                )
+                z_mid = float(np.median(Z))
+                return float(interp(np.array([[t, z_mid]]))[0])
             else:
                 return F
 
@@ -153,12 +161,11 @@ def extract_field_at_point(
             return float(interp(np.atleast_2d(points))[0])
         elif z is not None and r is not None:
             # Extract 1-D trace over time at fixed (z, r)
-            interp_zr = RegularGridInterpolator(
-                (Z, R), F[0, :, :], bounds_error=False, fill_value=0.0
-            )
-            # Verify z,r are within bounds
             trace: np.ndarray = np.zeros(len(T), dtype=np.float64)
             for i in range(len(T)):
+                interp_zr = RegularGridInterpolator(
+                    (Z, R), F[i, :, :], bounds_error=False, fill_value=0.0
+                )
                 trace[i] = float(interp_zr(np.array([[z, r]]))[0])
             return trace
         elif z is not None:
@@ -560,9 +567,13 @@ def save_point_monitor(
         ``"round"`` or ``"recta"``.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    header = f"% PointMonitor: {component} at fixed (z,r)\n% ct [m]  Field/Q [V/m/nC]"
     data = np.column_stack([T, trace])
-    np.savetxt(str(out_path), data, header=header, fmt="%.8e")
+    # Write %-prefixed header lines manually: np.savetxt(header=...) would
+    # prepend "# ", which is not MATLAB comment syntax.
+    header = f"% PointMonitor: {component} at fixed (z,r)\n% ct [m]  Field/Q [V/m/nC]"
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write(header + "\n")
+        np.savetxt(fh, data, fmt="%.8e")
 
 
 # ---------------------------------------------------------------------------

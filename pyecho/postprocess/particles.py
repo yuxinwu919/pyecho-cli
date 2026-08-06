@@ -79,7 +79,8 @@ def load_echo_particles(filepath: str | Path) -> dict[str, Any]:
         - ``Np`` (int): number of particles
         - ``q0`` (float): charge per macro-particle [C]
         - ``x, y, z`` (np.ndarray): positions [m]
-        - ``px, py, pz`` (np.ndarray): canonical momenta [kg·m/s]
+        - ``px, py, pz`` (np.ndarray): normalized momenta βγ = p/(mₑ·c)
+          (dimensionless)
         - ``status`` (np.ndarray of int): particle status flags
 
     Raises
@@ -114,10 +115,12 @@ def load_echo_particles(filepath: str | Path) -> dict[str, Any]:
             f"got {len(raw)}"
         )
 
-    # Phase space: 6×Np doubles
+    # Phase space: 6×Np doubles, stored component-major
+    # (all x, then all y, ..., matching MATLAB ``fread(ff, Np, 'double')``).
     offset = 16
     phase = np.frombuffer(raw, dtype=np.float64, count=6 * Np, offset=offset)
-    phase = phase.reshape(Np, 6, order="C")  # each row: x, y, z, px, py, pz
+    # Column-major reshape so column ``i`` holds the ``i``-th coordinate.
+    phase = phase.reshape(Np, 6, order="F")  # each row: x, y, z, px, py, pz
 
     # Status: Np int64
     offset += 6 * Np * 8
@@ -149,24 +152,40 @@ def compute_beam_moments(
 
     Replicates ``SeeBeamMoments.m``.
 
-    The beam moments monitor records statistical moments of the beam
-    distribution at each longitudinal step.  Typical columns include:
-    z, <x>, <y>, <z>, σ_x, σ_y, σ_z, ε_x, ε_y, ε_z, etc.
+    The ``BeamMomentsMonitor.txt`` file written by ECHO2D has 19 columns
+    (see ``SeeBeamMoments.m``)::
+
+        0: step index (longitudinal position in units of ``step_z``)
+        1: <x>        2: <y>        3: <z>
+        4: <px>       5: <py>       6: <pz>
+        7: <x²>       8: <y²>       9: <z²>
+        10: <px²>     11: <py²>     12: <pz²>
+        13: <x·px>    14: <y·py>    15: <z·pz>
+        16: <E>/E₀    17: <E²>/E₀²  18: <z·E>/E₀
+        (E₀ = mₑc²/e)
+
+    Moments are given as averages; the size columns are the *squares* of the
+    rms values, and the energy columns are normalized to ``E₀``.
 
     Parameters
     ----------
     beam_monitor_file : str or Path
         Path to ``BeamMomentsMonitor.txt``.
     step_z : float
-        Longitudinal step size for z-coordinate reconstruction [m].
+        Longitudinal step size [m] used to reconstruct the monitor position
+        ``z = step_index * step_z``.
 
     Returns
     -------
     dict
-        Keys include ``z`` (np.ndarray), ``mean_x``, ``mean_y``,
-        ``mean_z``, ``sigma_x``, ``sigma_y``, ``sigma_z``,
-        ``emit_x``, ``emit_y``, ``emit_z``, ``energy``, ``energy_spread``.
-        Exact keys depend on the number of columns in the file.
+        ``z`` (monitor position, ``step_index * step_z``), ``mean_x``,
+        ``mean_y``, ``mean_z``, ``mean_px``, ``mean_py``, ``mean_pz``,
+        ``sigma_x``, ``sigma_y``, ``sigma_z`` (rms sizes, m), ``sigma_px``,
+        ``sigma_py``, ``sigma_pz``, ``emit_x``, ``emit_y``, ``emit_z``
+        (normalized rms emittance in m, ``sqrt(<u²><pu²> - <u·pu>²)``),
+        ``energy`` (mean kinetic energy, eV), ``energy_spread`` (rms energy,
+        eV), ``energy2`` and ``zE``.  Keys are only present if the file has
+        enough columns.
     """
     filepath = Path(beam_monitor_file)
     try:
@@ -179,55 +198,68 @@ def compute_beam_moments(
 
     n_rows, n_cols = data.shape
 
-    # Standard ECHO2D BeamMomentsMonitor columns (approximate):
-    # 0: step index
-    # 1: <z>
-    # 2: σ_z
-    # 3: <x>
-    # 4: σ_x
-    # 5: <y>
-    # 6: σ_y
-    # 7: ε_x (normalized emittance)
-    # 8: ε_y
-    # 9: ε_z
-    # 10: <pz> or energy
-    # 11: σ_E / E (energy spread)
-    # ... (varies by ECHO2D version)
-
     result: dict[str, Any] = {
         "raw_data": data,
         "n_rows": n_rows,
         "n_cols": n_cols,
     }
 
-    # Build z-coordinate (cumulative step)
-    result["z"] = np.arange(n_rows, dtype=np.float64) * step_z
+    def _col(idx: int) -> np.ndarray | None:
+        return data[:, idx] if n_cols > idx else None
 
-    # Map known columns if we have enough
-    if n_cols >= 1:
-        result["step"] = data[:, 0] if n_cols > 1 else np.arange(n_rows)
-    if n_cols >= 2:
-        result["mean_z"] = data[:, 1]
-    if n_cols >= 3:
-        result["sigma_z"] = data[:, 2]
-    if n_cols >= 4:
-        result["mean_x"] = data[:, 3]
-    if n_cols >= 5:
-        result["sigma_x"] = data[:, 4]
-    if n_cols >= 6:
-        result["mean_y"] = data[:, 5]
-    if n_cols >= 7:
-        result["sigma_y"] = data[:, 6]
-    if n_cols >= 8:
-        result["emit_x"] = data[:, 7]
-    if n_cols >= 9:
-        result["emit_y"] = data[:, 8]
-    if n_cols >= 10:
-        result["emit_z"] = data[:, 9]
-    if n_cols >= 11:
-        result["energy"] = data[:, 10]
-    if n_cols >= 12:
-        result["energy_spread"] = data[:, 11]
+    # Monitor position / longitudinal coordinate.
+    result["step"] = data[:, 0]
+    result["z"] = data[:, 0] * step_z
+
+    # First-order moments.
+    result["mean_x"] = _col(1)
+    result["mean_y"] = _col(2)
+    result["mean_z"] = _col(3)
+    result["mean_px"] = _col(4)
+    result["mean_py"] = _col(5)
+    result["mean_pz"] = _col(6)
+
+    # Second-order moments are stored as squares.
+    x2, y2, z2 = _col(7), _col(8), _col(9)
+    px2, py2, pz2 = _col(10), _col(11), _col(12)
+    xpx, ypy, zpz = _col(13), _col(14), _col(15)
+
+    if x2 is not None:
+        result["sigma_x"] = np.sqrt(np.maximum(x2, 0.0))
+    if y2 is not None:
+        result["sigma_y"] = np.sqrt(np.maximum(y2, 0.0))
+    if z2 is not None:
+        result["sigma_z"] = np.sqrt(np.maximum(z2, 0.0))
+    if px2 is not None:
+        result["sigma_px"] = np.sqrt(np.maximum(px2, 0.0))
+    if py2 is not None:
+        result["sigma_py"] = np.sqrt(np.maximum(py2, 0.0))
+    if pz2 is not None:
+        result["sigma_pz"] = np.sqrt(np.maximum(pz2, 0.0))
+
+    # Normalized rms emittance: eps = sqrt(<u²><pu²> - <u·pu>²).
+    # Momenta are ECHO's normalized βγ values (dimensionless), so eps is in m.
+    def _emit(u2: np.ndarray, pu2: np.ndarray, upu: np.ndarray) -> np.ndarray:
+        return cast(np.ndarray, np.sqrt(np.maximum(u2 * pu2 - upu ** 2, 0.0)))
+
+    if x2 is not None and px2 is not None and xpx is not None:
+        result["emit_x"] = _emit(x2, px2, xpx)
+    if y2 is not None and py2 is not None and ypy is not None:
+        result["emit_y"] = _emit(y2, py2, ypy)
+    if z2 is not None and pz2 is not None and zpz is not None:
+        result["emit_z"] = _emit(z2, pz2, zpz)
+
+    # Energy moments are normalized to E₀ = mₑc²/e.
+    energy_col = _col(16)
+    energy2_col = _col(17)
+    zE_col = _col(18)
+    if energy_col is not None:
+        result["energy"] = energy_col * _E0
+    if energy2_col is not None:
+        result["energy2"] = energy2_col * _E0 ** 2
+        result["energy_spread"] = np.sqrt(energy2_col * _E0 ** 2)
+    if zE_col is not None:
+        result["zE"] = zE_col * _E0
 
     return result
 
@@ -256,7 +288,9 @@ def convert_echo_to_astra(
 
     ECHO → ASTRA coordinate transformations:
         - Positions: direct copy (x, y, z all in metres)
-        - Momenta: px/py/pz are converted from SI [kg·m/s] to eV/c
+        - Momenta: px/py/pz are ECHO's normalized momentum βγ = p/(mₑ·c)
+          (dimensionless) and are converted to eV/c by multiplying by
+          mₑ·c²/e (~510998.95 eV/c per unit of βγ)
         - Time:  t = z / c  (ultra-relativistic approximation)
         - Status: 0 → 5 (active), 1 → 1 (lost) — ASTRA convention
 
@@ -270,7 +304,9 @@ def convert_echo_to_astra(
         Total bunch charge [C].  If ``None``, uses Np × q0 from the
         ECHO file.
     reference_energy_MeV : float
-        Reference beam energy [MeV] for momentum normalisation.
+        Accepted for API compatibility.  The conversion is absolute (each
+        particle momentum is scaled independently), so this value does not
+        alter the output.
 
     Returns
     -------
@@ -291,17 +327,12 @@ def convert_echo_to_astra(
 
     macro_charge = total_charge / Np  # charge per macro-particle [C]
 
-    # Reference momentum in eV/c
-    E_ref_eV = reference_energy_MeV * 1e6
-    p_ref_eVc = np.sqrt(E_ref_eV ** 2 - _E0 ** 2) if E_ref_eV > _E0 else E_ref_eV
-
-    # Convert momenta from SI [kg·m/s] → eV/c
-    # p[eV/c] = p[kg·m/s] * c / e
-    eVc_per_SI = _C / 1.602176634e-19  # ~1.87e27
-
-    px_eVc = particles["px"] * eVc_per_SI
-    py_eVc = particles["py"] * eVc_per_SI
-    pz_eVc = particles["pz"] * eVc_per_SI
+    # ECHO2D stores the normalized momentum βγ = p/(mₑ·c) (dimensionless).
+    # Convert to ASTRA units of eV/c:
+    #   p[eV/c] = βγ · (mₑ·c²/e) = βγ · _E0
+    px_eVc = particles["px"] * _E0
+    py_eVc = particles["py"] * _E0
+    pz_eVc = particles["pz"] * _E0
 
     # Time-of-flight: t = z / c (ultra-relativistic)
     t = particles["z"] / _C
@@ -310,24 +341,33 @@ def convert_echo_to_astra(
     #               1 (lost in ECHO)   → 1 (lost in ASTRA)
     status_astra = np.where(particles["status"] == 0, 5, 1).astype(np.int32)
 
-    # Build ASTRA records
-    # Each record: 13 doubles + 1 int32 = 108 bytes
-    record_dtype = np.dtype([
-        ("x",  "<f8"),
-        ("y",  "<f8"),
-        ("z",  "<f8"),
-        ("px", "<f8"),
-        ("py", "<f8"),
-        ("pz", "<f8"),
-        ("t",  "<f8"),
-        ("charge", "<f8"),
-        ("status", "<i4"),
-        ("macro_charge", "<f8"),
-        ("spare1", "<f8"),
-        ("spare2", "<f8"),
-        ("spare3", "<f8"),
-        ("spare_int", "<i4"),
-    ])
+    # Build ASTRA records.
+    #
+    # Each record is exactly 108 bytes (13 doubles + 1 int32).  ASTRA's
+    # native layout stores the int32 status flag right after the 8th double
+    # (offset 64) and leaves 4 padding bytes so the 8-byte-aligned
+    # macro_charge starts at offset 72:
+    #   x y z px py pz t charge  (offsets 0..63)
+    #   status int32 (64), padding (68..71),
+    #   macro_charge (72), spare1/2/3 (80, 88, 96), spare int32 (104).
+    # The explicit offsets + itemsize are required: numpy's default struct
+    # packing would otherwise emit 104-byte records (no padding), which do
+    # not match the ASTRA format.
+    record_dtype = np.dtype(
+        {
+            "names": [
+                "x", "y", "z", "px", "py", "pz", "t", "charge",
+                "status", "macro_charge", "spare1", "spare2", "spare3",
+                "spare_int",
+            ],
+            "formats": [
+                "<f8", "<f8", "<f8", "<f8", "<f8", "<f8", "<f8", "<f8",
+                "<i4", "<f8", "<f8", "<f8", "<f8", "<i4",
+            ],
+            "offsets": [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104],
+            "itemsize": 108,
+        }
+    )
 
     records = np.zeros(Np, dtype=record_dtype)
     records["x"] = particles["x"]
@@ -385,13 +425,15 @@ def compute_particle_statistics(
         Keys: ``mean_x``, ``mean_y``, ``mean_z``, ``sigma_x``,
         ``sigma_y``, ``sigma_z``, ``mean_px``, ``mean_py``, ``mean_pz``,
         ``sigma_px``, ``sigma_py``, ``sigma_pz``, ``emit_x``,
-        ``emit_y``, ``emit_z`` (all in SI units).
+        ``emit_y``, ``emit_z`` (normalized rms emittance in metres).
 
     Notes
     -----
-    Normalised rms emittance is computed as::
+    ECHO2D stores momenta as the normalized momentum βγ = p/(mₑ·c)
+    (dimensionless).  The normalized rms emittance therefore needs no
+    physical constants and is computed as::
 
-        ε_x = sqrt( <x²>·<px²> − <x·px>² ) / (mₑ·c)
+        ε_x = sqrt( <x²>·<px²> − <x·px>² )
 
     where angle brackets denote the mean over active (status=0) particles.
     """
@@ -413,14 +455,13 @@ def compute_particle_statistics(
         return m, s
 
     def _emit(pos: np.ndarray, mom: np.ndarray) -> float:
-        """Normalised rms emittance [m·rad]."""
+        """Normalised rms emittance [m]."""
         pos_c = pos - np.mean(pos)
         mom_c = mom - np.mean(mom)
         ex2 = np.mean(pos_c ** 2)
         epx2 = np.mean(mom_c ** 2)
         ex_px = np.mean(pos_c * mom_c)
-        emit_si = np.sqrt(max(ex2 * epx2 - ex_px ** 2, 0.0))
-        return float(emit_si / (_ME * _C))
+        return float(np.sqrt(max(ex2 * epx2 - ex_px ** 2, 0.0)))
 
     mx, sx = _mean_std(x)
     my, sy = _mean_std(y)
