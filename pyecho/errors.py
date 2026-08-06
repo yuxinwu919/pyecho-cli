@@ -302,3 +302,100 @@ class ValidationError(PyEchoError):
         if constraint is not None:
             ctx.setdefault("constraint", constraint)
         super().__init__(message, **ctx)
+
+
+class MissingOutputError(PostProcessError):
+    """Expected simulation output is missing or incomplete.
+
+    Raised when post-processing cannot find wake files, monitor data,
+    particle tracking output, or other expected ECHO2D results.
+
+    Parameters
+    ----------
+    missing_files : list[str], optional
+        Names of files that were expected but not found.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        missing_files: list[str] | None = None,
+        **ctx: Any,
+    ) -> None:
+        if missing_files is not None:
+            ctx.setdefault("missing_files", missing_files)
+        super().__init__(message, **ctx)
+
+
+class PreprocessError(PyEchoError):
+    """Pre-processing error — input file generation or data conversion failure.
+
+    Parameters
+    ----------
+    input_file : Path or str, optional
+        Path to the input file that caused the error.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        input_file: Path | str | None = None,
+        **ctx: Any,
+    ) -> None:
+        if input_file is not None:
+            ctx.setdefault("input_file", str(input_file))
+        super().__init__(message, **ctx)
+
+
+class DependencyError(PyEchoError):
+    """A required third-party dependency is missing.
+
+    Parameters
+    ----------
+    dependency : str, optional
+        Name of the missing dependency (e.g., ``"h5py"``).
+    install_hint : str, optional
+        Installation command suggestion.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        dependency: str | None = None,
+        install_hint: str | None = None,
+        **ctx: Any,
+    ) -> None:
+        if dependency is not None:
+            ctx.setdefault("dependency", dependency)
+        if install_hint is not None:
+            ctx.setdefault("install_hint", install_hint)
+        super().__init__(message, **ctx)
+
+
+class ProjectError(PyEchoError):
+    """Project / workspace management error.
+
+    Parameters
+    ----------
+    project_dir : Path or str, optional
+        Path to the project directory.
+    manifest_file : Path or str, optional
+        Path to the manifest file (if applicable).
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        project_dir: Path | str | None = None,
+        manifest_file: Path | str | None = None,
+        **ctx: Any,
+    ) -> None:
+        if project_dir is not None:
+            ctx.setdefault("project_dir", str(project_dir))
+        if manifest_file is not None:
+            ctx.setdefault("manifest_file", str(manifest_file))
+        super().__init__(message, **ctx)
