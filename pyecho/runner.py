@@ -327,8 +327,13 @@ class ECHO2DRunner:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+            elapsed = time.monotonic() - t_start
             raise SimulationTimeoutError(
-                f"ECHO2D timed out after {timeout} s"
+                f"ECHO2D timed out after {timeout} s",
+                timeout=timeout,
+                elapsed=elapsed,
+                work_dir=self.work_dir,
+                executable=self.executable,
             )
 
         elapsed = time.monotonic() - t_start
@@ -337,7 +342,11 @@ class ECHO2DRunner:
         if return_code != 0:
             stderr_text = "\n".join(stderr_lines[-50:])
             raise SimulationCrashedError(
-                f"ECHO2D exited with code {return_code}\n{stderr_text}"
+                f"ECHO2D exited with code {return_code}",
+                stderr=stderr_text,
+                returncode=return_code,
+                work_dir=self.work_dir,
+                executable=self.executable,
             )
 
         logger.info("ECHO2D finished in %.1f s", elapsed)
@@ -433,8 +442,13 @@ class ECHO2DRunner:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+            elapsed = time.monotonic() - t_start
             raise SimulationTimeoutError(
-                f"ECHO2D timed out after {timeout} s"
+                f"ECHO2D timed out after {timeout} s",
+                timeout=timeout,
+                elapsed=elapsed,
+                work_dir=self.work_dir,
+                executable=self.executable,
             )
 
         elapsed = time.monotonic() - t_start
@@ -442,7 +456,11 @@ class ECHO2DRunner:
         if return_code != 0:
             stderr_text = "\n".join(stderr_lines[-50:])
             raise SimulationCrashedError(
-                f"ECHO2D exited with code {return_code}\n{stderr_text}"
+                f"ECHO2D exited with code {return_code}",
+                stderr=stderr_text,
+                returncode=return_code,
+                work_dir=self.work_dir,
+                executable=self.executable,
             )
 
         return self._build_result(
@@ -503,7 +521,9 @@ class ECHO2DRunner:
 
         raise ExecutableNotFoundError(
             "Cannot auto-detect ECHO2D executable. "
-            "Please specify the path explicitly."
+            "Please specify the path explicitly.",
+            platform_key=platform_key,
+            searched_paths=[str(project_root / r) for r in _PLATFORM_EXECUTABLE_MAP.values()],
         )
 
     def _find_project_root(self) -> Path:
