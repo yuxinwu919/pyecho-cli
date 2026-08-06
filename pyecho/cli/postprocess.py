@@ -181,6 +181,167 @@ def postprocess_wake(
             plt.show()
 
 
+@postprocess_app.command("impedance")
+def postprocess_impedance(
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    mode: Annotated[int, typer.Option("--mode", "-m", help="Mode number")] = 0,
+    output: Annotated[Optional[str], typer.Option("--output", "-o", help="Save CSV to path")] = None,
+    plot: Annotated[bool, typer.Option("--plot", "-p", help="Plot impedance")] = False,
+) -> None:
+    """Compute impedance Z(f) from wake potential W(s) via FFT.
+
+    Loads the ``wakeL_XX.txt`` file for the requested azimuthal mode and
+    applies a discrete Fourier transform (:func:`pyecho.mathlib.fft.wake2impedance`)
+    to obtain the complex impedance spectrum.  The raw wake is stored in
+    [m·V/nC]; it is converted to [V/C] first so that Z(f) comes out in ohms.
+
+    \\b
+    Examples:
+      echo2d postprocess impedance .                  # mode 0 (monopole)
+      echo2d postprocess impedance . -m 1             # mode 1 (dipole)
+      echo2d postprocess impedance . -o impedance.csv # save CSV
+      echo2d postprocess impedance . -m 0 --plot      # plot Re(Z)/Im(Z)
+    """
+    from pathlib import Path as _Path
+    from pyecho.project import resolve_run_dir
+    from pyecho.parser import OutputLoader, ParserError
+    from pyecho.mathlib.fft import wake2impedance
+
+    # Resolve run ID (e.g. "001") to an actual directory path
+    resolved = resolve_run_dir(output_dir)
+    if resolved is not None:
+        output_dir = str(resolved)
+        console.print(f"  [dim]Run directory: {output_dir}[/dim]")
+
+    out_path = _Path(output_dir).resolve()
+    loader = OutputLoader(out_path)
+
+    # 1. Load wake data for the requested mode
+    try:
+        s, W_raw, hr, offset, D, sigma = loader.load_wake(mode=mode)
+    except ParserError as exc:
+        console.print(f"[yellow]No wake data for mode {mode}: {exc}[/yellow]")
+        console.print(
+            "[dim]Look for wakeL_XX.txt files in the run output, or run "
+            "'echo2d postprocess wake . --plot' first.[/dim]"
+        )
+        return
+
+    # Raw wake [m·V/nC] → [V/pC] → [V/C].  With W in V/C, Z(f) = Δt·FFT{W}
+    # is dimensionless×V/C = V/A = Ω.
+    w_vc = (W_raw * 1e-3) * 1e12
+
+    # 2. Wake potential → complex impedance via FFT
+    f_full, z_full = wake2impedance(s, w_vc)
+    # Keep the physically meaningful non-negative-frequency half
+    n = len(f_full)
+    f = f_full[: n // 2 + 1]
+    z = z_full[: n // 2 + 1]
+
+    re_z = np.real(z)
+    im_z = np.imag(z)
+    abs_z = np.abs(z)
+
+    # 3. Display Re(Z), Im(Z), |Z| at key frequencies in a Rich table
+    i_peak = int(np.argmax(abs_z))
+    n_pos = len(f)
+    if n_pos > 1:
+        key_idx = sorted(
+            set(np.geomspace(1, n_pos - 1, 6).astype(int).tolist())
+            | {0, i_peak}
+        )
+    else:
+        key_idx = [0]
+
+    key_table = Table(title=f"Impedance Z(f) — Mode {mode}")
+    key_table.add_column("f [Hz]", justify="right")
+    key_table.add_column("Re(Z) [Ω]", justify="right")
+    key_table.add_column("Im(Z) [Ω]", justify="right")
+    key_table.add_column("|Z| [Ω]", justify="right")
+    for i in key_idx:
+        marker = "  ◀ peak |Z|" if i == i_peak else ""
+        key_table.add_row(
+            f"{f[i]:.4e}",
+            f"{re_z[i]:+.4e}",
+            f"{im_z[i]:+.4e}",
+            f"[green]{abs_z[i]:.4e}[/green]{marker}",
+        )
+    console.print(key_table)
+
+    # 4. Peak |Z| and its frequency
+    console.print(
+        Panel.fit(
+            f"[bold]Peak |Z|[/bold]\n"
+            f"  |Z| peak:   [green]{abs_z[i_peak]:.4e} Ω[/green]\n"
+            f"  Frequency:  [cyan]{f[i_peak]:.4e} Hz[/cyan]  "
+            f"({f[i_peak] * 1e-9:.4f} GHz)\n"
+            f"  Re(Z):      {re_z[i_peak]:+.4e} Ω\n"
+            f"  Im(Z):      {im_z[i_peak]:+.4e} Ω\n"
+            f"  Points:     {n_pos}\n"
+            f"  s range:    [{s[0]:.4e}, {s[-1]:.4e}] m  "
+            f"(σ = {sigma:.4e} m)",
+            title="Impedance Summary",
+        )
+    )
+
+    # 5. Save CSV: f, Re(Z), Im(Z), |Z|
+    if output:
+        out_csv = _Path(output)
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        np.savetxt(
+            out_csv,
+            np.column_stack((f, re_z, im_z, abs_z)),
+            delimiter=",",
+            header="f [Hz],Re(Z) [Ohm],Im(Z) [Ohm],|Z| [Ohm]",
+            comments="#",
+            fmt="%.8e",
+        )
+        console.print(f"  [dim]Impedance CSV saved to {out_csv}[/dim]")
+
+    # 6. Plot with dual y-axis (Re / Im)
+    if plot:
+        import matplotlib.pyplot as plt
+
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+        ax1.plot(f, re_z, "b-", linewidth=1.2, label="Re(Z)")
+        ax1.set_xlabel("Frequency [Hz]")
+        ax1.set_ylabel("Re(Z) [Ω]", color="b")
+        ax1.tick_params(axis="y", labelcolor="b")
+
+        ax2 = ax1.twinx()
+        ax2.plot(f, im_z, "r-", linewidth=1.2, label="Im(Z)")
+        ax2.set_ylabel("Im(Z) [Ω]", color="r")
+        ax2.tick_params(axis="y", labelcolor="r")
+
+        # Mark the peak |Z| location
+        ax1.axvline(f[i_peak], color="k", linestyle="--", linewidth=0.8, alpha=0.6)
+        ax1.annotate(
+            f"peak |Z| = {abs_z[i_peak]:.3e} Ω\n@ {f[i_peak] * 1e-9:.3f} GHz",
+            xy=(f[i_peak], re_z[i_peak]),
+            xytext=(0.02, 0.96),
+            textcoords="axes fraction",
+            fontsize=9,
+            va="top",
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85),
+        )
+        ax1.legend(loc="upper left")
+        ax2.legend(loc="upper right")
+
+        ax1.set_title(f"Impedance Z(f) — Mode {mode}")
+        ax1.grid(True, alpha=0.3)
+        fig.tight_layout()
+
+        if output:
+            save_path = str(_Path(output).with_suffix(".png"))
+        else:
+            processed_dir = _find_processed_dir(out_path) / "wake"
+            processed_dir.mkdir(parents=True, exist_ok=True)
+            save_path = str(processed_dir / f"impedance_m{mode:02d}.png")
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        console.print(f"  [dim]Impedance plot saved to {save_path}[/dim]")
+        plt.show()
+
+
 @postprocess_app.command("field")
 def postprocess_field(
     output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
@@ -934,6 +1095,335 @@ def postprocess_all(
     # ── Summary ──
     console.print(f"\n[bold green]✓ Post-processing complete.[/bold green]")
     console.print(f"  Results saved to [cyan]{processed_dir}[/cyan]")
+
+
+@postprocess_app.command("report")
+def postprocess_report(
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="Output HTML file path"),
+    ] = None,
+) -> None:
+    """Generate an HTML summary report of simulation results.
+
+    Post-processes the run and writes a self-contained HTML report
+    (no external assets) containing the run metadata, the loss/kick
+    factors table and an embedded wake-potential plot rendered as a
+    base64 PNG.  Open the file in any web browser.
+
+    \\b
+    Examples:
+      echo2d postprocess report 001
+      echo2d postprocess report . -o report.html
+    """
+    import base64
+    import io
+    from datetime import datetime
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from pyecho._version import __version__
+    from pyecho.api import quick_postprocess
+    from pyecho.datamodel import RoundWakeResult
+    from pyecho.project import resolve_run_dir
+
+    # Resolve run ID (e.g. "001") to actual directory path
+    resolved = resolve_run_dir(output_dir)
+    if resolved is not None:
+        output_dir = str(resolved)
+        console.print(f"  [dim]Run directory: {output_dir}[/dim]")
+
+    try:
+        result = quick_postprocess(output_dir)
+    except Exception as exc:
+        console.print(f"  [yellow]Warning:[/yellow] No processed wake data: {exc}")
+        console.print("  [dim]Generating a metadata-only report.[/dim]")
+        result = None
+
+    out_path = Path(output_dir).resolve()
+
+    # -- Collect metadata (best-effort) ------------------------------------
+    run_name = out_path.name
+    run_id = ""
+    try:
+        from pyecho.project import load_run_meta
+        meta = load_run_meta(out_path)
+        if meta.name:
+            run_name = meta.name
+        run_id = meta.id
+    except Exception:
+        pass
+
+    # -- Convergence-relevant parameters (best-effort) -----------------------
+    # Bunch σ and the transverse mesh step h_r are the two controls that
+    # determine wake convergence (ECHO Manual §1 recommends σ/h_r ≥ 5).
+    convergence_rows: list[tuple[str, str]] = []
+    try:
+        from pyecho.parser import OutputLoader
+        wakes = OutputLoader(out_path).load_all_wakes()
+        if wakes:
+            mode = min(wakes.keys())
+            s, _W, hr, _off, D, sigma = wakes[mode]
+            if sigma:
+                convergence_rows.append(("Bunch σ (RMS length)", f"{sigma * 1e3:.4f} mm"))
+            if hr:
+                convergence_rows.append(("Transverse mesh step h_r", f"{hr * 1e3:.6f} mm"))
+                if sigma:
+                    convergence_rows.append(
+                        ("Mesh points on σ (σ/h_r)", f"{sigma / hr:.1f}")
+                    )
+            convergence_rows.append(("Wake samples", str(len(s))))
+            if D:
+                convergence_rows.append(("Structure width D", f"{D * 1e3:.3f} mm"))
+    except Exception:
+        convergence_rows = []
+
+    if result is None:
+        geometry_label = "Unknown"
+        geometry = "unknown"
+        factor_rows = []
+    elif isinstance(result, RoundWakeResult):
+        geometry_label = "Round (cylindrical)"
+        geometry = "round"
+        factor_rows = [
+            {"label": "Loss factor (longitudinal)", "value": result.loss_long,
+             "unit": "V/pC", "desc": "κ = −∫ λ·Wlong·ds"},
+            {"label": "Peak wake", "value": result.peak,
+             "unit": "V/pC", "desc": "max |Wlong|"},
+            {"label": "RMS spread", "value": result.rms_spread,
+             "unit": "V/pC", "desc": "RMS of Wlong around −κ"},
+        ]
+        if result.kick_dipole is not None:
+            factor_rows.append(
+                {"label": "Kick factor (dipole)", "value": result.kick_dipole,
+                 "unit": "V/pC/m", "desc": "transverse kick, m=1"}
+            )
+    else:
+        geometry_label = "Rectangular (flat)"
+        geometry = "recta"
+        factor_rows = [
+            {"label": "Loss factor (longitudinal)", "value": result.loss_long,
+             "unit": "V/pC", "desc": "κ = −∫ λ·Wlong·ds"},
+            {"label": "Kick factor (quadrupole)", "value": result.kick_quad,
+             "unit": "V/pC/mm", "desc": "integrated over transverse offset"},
+            {"label": "Kick factor (dipole)", "value": result.kick_dipole,
+             "unit": "V/pC/mm", "desc": "integrated over transverse offset"},
+        ]
+
+    # -- Render wake plot into a base64 PNG data URI -----------------------
+    def _plot_to_data_uri() -> str | None:
+        """Plot the wake potential(s) and return a base64 PNG data URI.
+
+        Returns ``None`` when no wake result is available (metadata-only
+        report).
+        """
+        if result is None:
+            return None
+        fig, ax = plt.subplots(figsize=(10, 5))
+        s_mm = result.s * 1e3
+        if geometry == "round":
+            ax.plot(s_mm, result.Wlong, label="Monopole (m=0) Wlong",
+                    color="#2c7fb8", linewidth=1.5)
+            if result.Wdipole is not None:
+                ax2 = ax.twinx()
+                ax2.plot(s_mm, result.Wdipole, label="Dipole (m=1) Wdipole",
+                         color="#d95f0e", linewidth=1.2, alpha=0.85)
+                ax2.set_ylabel("Wdipole [V/pC/m²]", color="#d95f0e")
+                ax2.tick_params(axis="y", labelcolor="#d95f0e")
+            ax.set_ylabel("Wlong [V/pC]")
+        else:
+            ax.plot(s_mm, result.Wlong, label="Wlong (monopole)",
+                    color="#2c7fb8", linewidth=1.5)
+            ax.plot(s_mm, result.Wquad, label="Wquad (quadrupole)",
+                    color="#d95f0e", linewidth=1.2, alpha=0.85)
+            ax.plot(s_mm, result.Wdipole, label="Wdipole (dipole)",
+                    color="#31a354", linewidth=1.2, alpha=0.85)
+            ax.set_ylabel("Wake [V/pC/mm]")
+        ax.set_xlabel("s [mm]")
+        ax.set_title(f"Wake potential — {geometry_label}")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best")
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        return "data:image/png;base64," + base64.b64encode(buf.read()).decode("ascii")
+
+    plot_data_uri = _plot_to_data_uri()
+
+    # -- Render the HTML report --------------------------------------------
+    from jinja2 import Environment
+
+    html_template = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} — ECHO2D Report</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #22262b; --muted: #6b7280;
+    --accent: #2c7fb8; --border: #e2e5e9; --good: #15803d; --warn: #b45309;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+         sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
+  header { background: linear-gradient(135deg, #123a5c, #2c7fb8); color: #fff;
+           padding: 28px 40px; }
+  header h1 { margin: 0 0 6px; font-size: 26px; font-weight: 700; }
+  header .sub { opacity: 0.9; font-size: 14px; }
+  main { max-width: 960px; margin: 0 auto; padding: 28px 24px 48px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+          padding: 20px 24px; margin-bottom: 24px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  h2 { font-size: 17px; margin: 0 0 14px; color: #123a5c;
+       border-bottom: 2px solid var(--border); padding-bottom: 8px; }
+  .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+               gap: 12px; }
+  .meta-item .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+                  color: var(--muted); }
+  .meta-item .v { font-size: 15px; font-weight: 600; margin-top: 2px; word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+       color: var(--muted); }
+  td.num { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+           font-variant-numeric: tabular-nums; text-align: right; }
+  td .desc { display: block; color: var(--muted); font-size: 12px; }
+  .good { color: var(--good); } .warn { color: var(--warn); }
+  .plot-wrap { text-align: center; }
+  .plot-wrap img { max-width: 100%; height: auto; border-radius: 6px;
+                   border: 1px solid var(--border); }
+  footer { text-align: center; color: var(--muted); font-size: 12px;
+           padding: 0 0 32px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{ title }} — ECHO2D Report</h1>
+  <div class="sub">{{ run_dir }} · {{ geometry_label }} geometry</div>
+</header>
+<main>
+  <section class="card">
+    <h2>Metadata</h2>
+    <div class="meta-grid">
+      <div class="meta-item"><div class="k">Run ID</div>
+        <div class="v">{{ run_id or "—" }}</div></div>
+      <div class="meta-item"><div class="k">Run name</div>
+        <div class="v">{{ run_name }}</div></div>
+      <div class="meta-item"><div class="k">Geometry</div>
+        <div class="v">{{ geometry_label }}</div></div>
+      <div class="meta-item"><div class="k">Generated</div>
+        <div class="v">{{ generated_at }}</div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Loss &amp; Kick Factors</h2>
+    {% if factor_rows %}
+    <table>
+      <thead><tr><th>Quantity</th><th>Value</th><th>Units</th><th>Description</th></tr></thead>
+      <tbody>
+      {% for row in factor_rows %}
+        <tr>
+          <td>{{ row.label }}</td>
+          <td class="num {% if row.value > 0 %}good{% else %}warn{% endif %}">
+            {{ "%.6f"|format(row.value) }}</td>
+          <td>{{ row.unit }}</td>
+          <td><span class="desc">{{ row.desc }}</span></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--warn);">No processed wake data available — run
+      <code>echo2d postprocess wake</code> first.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Wake Potential</h2>
+    {% if plot_data_uri %}
+    <div class="plot-wrap"><img src="{{ plot_data_uri }}" alt="Wake potential plot"></div>
+    {% else %}
+    <p style="color:var(--warn);">No wake plot available (missing processed wake data).</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Convergence</h2>
+    {% if convergence_rows %}
+    <table>
+      <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+      <tbody>
+      {% for k, v in convergence_rows %}
+        <tr><td>{{ k }}</td><td>{{ v }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p style="margin-top:10px;color:var(--muted);font-size:13px;">
+      Reference: ECHO Manual §1 recommends at least 5 mesh points on the
+      bunch RMS length (σ/h_r ≥ 5) for converged wake potentials.
+    </p>
+    {% else %}
+    <p style="color:var(--warn);">No wake data available to evaluate convergence parameters.</p>
+    {% endif %}
+  </section>
+</main>
+<footer>Generated by ECHO2D · pyecho {{ version }}</footer>
+</body>
+</html>
+"""
+
+    try:
+        html = (
+            Environment(autoescape=True)
+            .from_string(html_template)
+            .render(
+                title=run_name or out_path.name,
+                run_id=run_id,
+                run_name=run_name,
+                run_dir=str(out_path),
+                geometry_label=geometry_label,
+                generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                factor_rows=factor_rows,
+                plot_data_uri=plot_data_uri,
+                convergence_rows=convergence_rows,
+                version=__version__,
+            )
+        )
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/bold red] Failed to render report: {exc}")
+        raise typer.Exit(1)
+
+    # -- Save ----------------------------------------------------------------
+    if output:
+        report_path = Path(output).expanduser().resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        report_path = out_path / "postprocess_report.html"
+    try:
+        report_path.write_text(html, encoding="utf-8")
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/bold red] Failed to write report: {exc}")
+        raise typer.Exit(1)
+
+    console.print(
+        Panel.fit(
+            f"[bold green]✓ Report generated[/bold green]\n"
+            f"  File:  [cyan]{report_path}[/cyan]\n"
+            f"  Size:  {report_path.stat().st_size:,} bytes\n"
+            f"  Open:  [bold]open \"{report_path}\"[/bold]  "
+            f"or paste the path into a browser",
+            title="HTML Report",
+        )
+    )
 
 
 def _plot_wake_result(wake_result: Any, geo_type: str, wake_out: Path) -> None:

@@ -63,7 +63,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -325,7 +325,7 @@ def load_hdf5(filepath: str | Path) -> dict[str, Any]:
             if "parameters" in grp:
                 data = grp["parameters"][()]
                 if isinstance(data, np.void):
-                    data = bytes(data)
+                    data = data.tobytes()
                 result["input"]["parameters"] = data.decode("utf-8")
             result["input"]["geometry_file"] = grp.attrs.get(
                 "geometry_file", ""
@@ -387,7 +387,7 @@ def load_hdf5(filepath: str | Path) -> dict[str, Any]:
                 if key in grp:
                     data = grp[key][()]
                     if isinstance(data, np.void):
-                        data = bytes(data)
+                        data = data.tobytes()
                     if isinstance(data, bytes):
                         result[key] = data.decode("utf-8")
                     else:
@@ -412,7 +412,7 @@ def _resolve_result(result_or_dir: Any) -> Any:
     if hasattr(result_or_dir, "loss_factor") and hasattr(result_or_dir, "s"):
         from pyecho.datamodel import SimulationResult, ModeResult, RunMetadata
         wr = result_or_dir
-        result = SimulationResult()
+        result: Any = SimulationResult()
         mr = ModeResult(mode_number=0, s_raw=wr.s, W_raw=wr.W,
                        hr=0.0, offset=0, D=0.0, sigma=0.0, wake_processed=wr)
         result.modes = {0: mr}
@@ -450,13 +450,13 @@ def _resolve_result(result_or_dir: Any) -> Any:
     result.output_dir = str(_dir)
 
     # Load modes
-    modes = {}
+    modes: dict[int, Any] = {}
     try:
         all_wakes = loader.load_all_wakes()
         for mode_num, wake_data in all_wakes.items():
             # load_all_wakes() returns tuples (s, W_raw, hr, offset, D, sigma).
             s_raw, W_raw, hr, offset, D, sigma = wake_data
-            result_modes = _MinimalResult()
+            result_modes: Any = _MinimalResult()
             result_modes.mode_number = mode_num
             result_modes.s_raw = s_raw
             result_modes.W_raw = W_raw
@@ -489,7 +489,7 @@ def _resolve_result(result_or_dir: Any) -> Any:
     class _MinimalMeta:
         pass
 
-    meta = _MinimalMeta()
+    meta: Any = _MinimalMeta()
     meta.timestamp = datetime.now()
     meta.executable_path = ""
     meta.executable_arch = ""
@@ -509,14 +509,14 @@ def _resolve_result(result_or_dir: Any) -> Any:
 def _safe_read(grp: Any, key: str) -> np.ndarray | None:
     """Safely read a dataset, returning None if it does not exist."""
     if key in grp:
-        return np.asarray(grp[key][()])
+        return cast(np.ndarray, np.asarray(grp[key][()]))
     return None
 
 
 def _serialize_params(params: Any) -> dict:
     """Fallback serialization for params objects without model_dump_json."""
     if hasattr(params, "model_dump"):
-        return params.model_dump()
+        return cast(dict, params.model_dump())
     if hasattr(params, "__dict__"):
         return {
             k: v for k, v in params.__dict__.items()

@@ -36,8 +36,9 @@ echo2d
 ├── config       generate / validate / show
 ├── geometry     create (pipe/dlw/corrugated) / validate / show / info
 ├── run          new / start / list / info / single / converge
-├── postprocess  wake / field / particles / wake-monitor / beam-moments / all
-├── visualize    wake / compare / modes / field
+├── postprocess  wake / impedance / field / particles / wake-monitor /
+│                beam-moments / report / all
+├── visualize    wake / impedance / compare / modes / field
 ├── export       hdf5 / csv
 ├── compare      runs
 ├── system       info / detect / check
@@ -108,6 +109,23 @@ Runs ECHO2D at three mesh resolutions and checks loss-factor convergence (<5%).
 pip install -e ".[dev]"
 pytest
 python tests/comprehensive_test/scripts/run_full_test.py --quick
+```
+
+## Development
+
+The project follows a test-driven workflow:
+
+- **pytest** — 300+ unit and integration tests covering all CLI commands, the
+  ECHO2D file parsers, the `mathlib` numerics, and end-to-end round/recta runs
+- **GitHub Actions** — CI runs the full test suite on every push and PR
+- **mypy** — static type checking over the `pyecho` package
+- **ruff** — linting and import sorting, configured in `pyproject.toml`
+
+### Testing
+
+```bash
+pytest                    # run all tests
+pytest tests/test_mathlib.py -v  # specific module
 ```
 
 ## References

@@ -65,6 +65,136 @@ def visualize_wake(
         plt.show()
 
 
+@visualize_app.command("impedance")
+def visualize_impedance(
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    mode: Annotated[int, typer.Option("--mode", "-m", help="Mode number")] = 0,
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="Save plot to file"),
+    ] = None,
+    log_scale: Annotated[
+        bool,
+        typer.Option("--log", "-l", help="Use log scale for frequency"),
+    ] = False,
+) -> None:
+    """Plot impedance spectrum Z(f) — Re, Im, and magnitude vs frequency.
+
+    The longitudinal wake potential W(s) (``wakeL_XX.txt``) is Fourier
+    transformed into the frequency domain with :func:`wake2impedance`,
+    giving the complex impedance Z(f) in ohms.
+
+    \\b
+    Examples:
+      echo2d visualize impedance . -m 0
+      echo2d visualize impedance 001 -m 0 --log -o impedance.png
+    """
+    import numpy as np
+
+    # Run-ID / directory resolution (e.g. "001" -> runs/001_*).
+    try:
+        from pyecho.project import resolve_run_dir
+
+        resolved = resolve_run_dir(output_dir)
+        if resolved is not None:
+            output_dir = str(resolved)
+    except Exception:
+        pass
+
+    from pyecho.parser import OutputLoader
+    from pyecho.mathlib.fft import wake2impedance
+
+    try:
+        loader = OutputLoader(output_dir)
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/bold red] Cannot open output directory: {exc}")
+        raise typer.Exit(1)
+
+    # Load wake data for the requested mode; bail out gracefully if absent.
+    try:
+        s, W_raw, hr, offset, D, sigma = loader.load_wake(mode=mode)
+    except Exception:
+        available = sorted(loader.load_all_wakes().keys())
+        console.print(
+            f"[yellow]No wake data for mode {mode} in {output_dir}.[/yellow]"
+        )
+        if available:
+            console.print(
+                f"  Available modes: {', '.join(f'm={m}' for m in available)}\n"
+                f"  Use [cyan]echo2d visualize impedance {output_dir} "
+                f"-m {available[0]}[/cyan]"
+            )
+        else:
+            console.print(
+                "  No wakeL_XX.txt files found in this directory. "
+                "Run a simulation first or point at the correct output directory."
+            )
+        return
+
+    # Wake units: m·V/nC -> V/pC (×1e-3) -> V/C (×1e12), so that the
+    # Fourier transform yields an impedance in ohms.
+    w_vc = W_raw * 1e-3 * 1e12
+    f, z = wake2impedance(s, w_vc)
+    n = len(f)
+    f_pos, z_pos = f[: n // 2 + 1], z[: n // 2 + 1]
+
+    mag = np.abs(z_pos)
+    re = z_pos.real
+    im = z_pos.imag
+
+    # Use a headless backend when saving to a file.
+    if output:
+        import matplotlib
+
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, (ax_mag, ax_re) = plt.subplots(
+        2, 1,
+        figsize=(9, 7),
+        sharex=True,
+        constrained_layout=True,
+    )
+
+    # Top panel: |Z(f)| (log-log with --log, linear otherwise).
+    if log_scale:
+        keep = mag > 0
+        ax_mag.loglog(f_pos[keep], mag[keep], "b-", lw=1.5, label=r"$|Z(f)|$")
+    else:
+        ax_mag.plot(f_pos, mag, "b-", lw=1.5, label=r"$|Z(f)|$")
+    ax_mag.set_ylabel(r"$|Z|$ [$\Omega$]")
+    ax_mag.set_title(f"Impedance spectrum — mode {mode}")
+    ax_mag.grid(True, which="both", alpha=0.3)
+    ax_mag.legend(loc="best")
+
+    # Bottom panel: dual y-axis — Re(Z) on the left, Im(Z) on the right.
+    ax_im = ax_re.twinx()
+    if log_scale:
+        ax_re.semilogx(f_pos, re, "g-", lw=1.2, alpha=0.85, label=r"$\mathrm{Re}(Z)$")
+        ax_im.semilogx(f_pos, im, "r--", lw=1.2, alpha=0.85, label=r"$\mathrm{Im}(Z)$")
+    else:
+        ax_re.plot(f_pos, re, "g-", lw=1.2, alpha=0.85, label=r"$\mathrm{Re}(Z)$")
+        ax_im.plot(f_pos, im, "r--", lw=1.2, alpha=0.85, label=r"$\mathrm{Im}(Z)$")
+    ax_re.set_xlabel("f [Hz]")
+    ax_re.set_ylabel(r"$\mathrm{Re}(Z)$ [$\Omega$]", color="g")
+    ax_im.set_ylabel(r"$\mathrm{Im}(Z)$ [$\Omega$]", color="r")
+    ax_re.grid(True, which="both", alpha=0.3)
+    lines_re, labels_re = ax_re.get_legend_handles_labels()
+    lines_im, labels_im = ax_im.get_legend_handles_labels()
+    ax_re.legend(lines_re + lines_im, labels_re + labels_im, loc="best")
+
+    console.print(
+        f"[green]Mode {mode}: f_max={f_pos[-1]:.3e} Hz, "
+        f"max|Z|={mag.max():.4g} Ω[/green]"
+    )
+
+    if output:
+        fig.savefig(output, dpi=150, bbox_inches="tight")
+        console.print(f"[green]Plot saved to {output}[/green]")
+    else:
+        plt.show()
+
+
 @visualize_app.command("compare")
 def visualize_compare(
     files: Annotated[list[str], typer.Argument(help="Wake files to compare")],

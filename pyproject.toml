@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyecho-cli"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python CLI toolkit for the ECHO2D electromagnetic wakefield solver"
 authors = [{name = "ECHO2D Team"}]
 readme = "README.md"
@@ -91,6 +91,10 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["pyecho"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 # ---------------------------------------------------------------------------
 # Code coverage (pytest-cov)
