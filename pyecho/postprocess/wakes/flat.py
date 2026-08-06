@@ -73,6 +73,7 @@ import numpy as np
 
 from pyecho.mathlib.integration import integr_tr
 from pyecho.mathlib.loss import loss_shape
+from pyecho.parser import find_wake_file
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +115,12 @@ def _load_odd_mode_wakes(
 
     for i in range(1, n_modes + 1):
         m = 2 * i - 1  # odd: 1, 3, 5, ...
-        fname = data_dir / f"wakeL_{m:02d}.txt"
-        if not fname.exists():
+        fname = find_wake_file(data_dir, m)
+        if fname is None:
             logger.warning("wakeL_%02d.txt not found; stopping at mode %d.", m, m - 2)
             break
 
-        data = np.loadtxt(fname)
+        data = np.loadtxt(fname, comments="%")
         # First two rows are header: [hr, offset], [D, sigma]
         # D = total structure width [m] (= Width in input_in.txt, recta only)
         # Remaining rows: [s, W_raw]
@@ -134,17 +135,24 @@ def _load_odd_mode_wakes(
 
 
 def _check_matching_s(wcc: np.ndarray, wss: np.ndarray) -> None:
-    """Raise :class:`ValueError` unless Wcc and Wss share the s-grid.
+    """Raise :class:`ValueError` unless Wcc and Wss share the s-grid and width D.
 
-    Both matrices must have the same number of columns and identical
-    longitudinal coordinates in row 0, so that per-mode rows can be summed
-    element-wise.  Differing *mode* counts are fine (only the common modes
-    are used); differing *s*-grids are not.
+    Both matrices must have the same number of columns, identical
+    longitudinal coordinates in row 0, and the same structure width ``D``
+    (cell ``[0, 0]``) so that per-mode rows can be summed element-wise and
+    the wavenumbers ``k = π·m/D`` are consistent.  Differing *mode* counts
+    are fine (only the common modes are used); differing *s*-grids or *D*
+    are not.
     """
-    if wcc.shape[1] != wss.shape[1] or not np.allclose(wcc[0, 1:], wss[0, 1:]):
+    if (
+        wcc.shape[1] != wss.shape[1]
+        or not np.allclose(wcc[0, 1:], wss[0, 1:])
+        or not np.isclose(wcc[0, 0], wss[0, 0])
+    ):
         raise ValueError(
-            "Wcc and Wss must share the same longitudinal s-grid "
-            "(different column count or first data row)."
+            "Wcc and Wss must share the same longitudinal s-grid and "
+            "structure width D (different column count, first data row, "
+            "or D value)."
         )
 
 
@@ -202,8 +210,8 @@ def assemble_wcc(
 
     # Load the first mode to get hr, offset, D, sigma, and s-grid
     # D = total structure width [m] (= Width in input_in.txt, recta only)
-    fname_1 = data_dir / "wakeL_01.txt"
-    if not fname_1.exists():
+    fname_1 = find_wake_file(data_dir, 1)
+    if fname_1 is None:
         raise FileNotFoundError(f"wakeL_01.txt not found in {data_dir}")
 
     data_1 = np.loadtxt(fname_1, comments="%")
@@ -228,8 +236,8 @@ def assemble_wcc(
         k = np.pi / D * m
         Wcc[i, 0] = k
 
-        fname = data_dir / f"wakeL_{m:02d}.txt"
-        if not fname.exists():
+        fname = find_wake_file(data_dir, m)
+        if fname is None:
             logger.warning("wakeL_%02d.txt not found; zero-filling mode %d.", m, m)
             continue
 
@@ -273,8 +281,8 @@ def assemble_wss(
     """
     data_dir = Path(data_dir)
 
-    fname_1 = data_dir / "wakeL_01.txt"
-    if not fname_1.exists():
+    fname_1 = find_wake_file(data_dir, 1)
+    if fname_1 is None:
         raise FileNotFoundError(f"wakeL_01.txt not found in {data_dir}")
 
     data_1 = np.loadtxt(fname_1, comments="%")
@@ -297,8 +305,8 @@ def assemble_wss(
         k = np.pi / D * m
         Wss[i, 0] = k
 
-        fname = data_dir / f"wakeL_{m:02d}.txt"
-        if not fname.exists():
+        fname = find_wake_file(data_dir, m)
+        if fname is None:
             logger.warning("wakeL_%02d.txt not found; zero-filling mode %d.", m, m)
             continue
 

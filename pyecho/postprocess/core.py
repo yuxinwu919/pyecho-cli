@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from pyecho.errors import MissingOutputError, PostProcessError
+from pyecho.parser import find_wake_file, list_wake_files
 
 if TYPE_CHECKING:
     from pyecho.datamodel import WakeResult, FlatWakeResult, SimulationResult
@@ -100,13 +101,9 @@ class PostProcessor:
             if not child.is_dir():
                 continue
             name = child.name.lower()
-            if (name == "magn" or name.startswith("magn")) and list(
-                child.glob("wakeL_*.txt")
-            ):
+            if (name == "magn" or name.startswith("magn")) and list_wake_files(child):
                 magn_dir = child
-            if (name == "elec" or name.startswith("elec")) and list(
-                child.glob("wakeL_*.txt")
-            ):
+            if (name == "elec" or name.startswith("elec")) and list_wake_files(child):
                 elec_dir = child
 
         has_magn = magn_dir is not None
@@ -122,9 +119,9 @@ class PostProcessor:
         else:
             # Try to infer from wakeL file presence
             data_dir = self.loader._resolve_data_dir()
-            if list(data_dir.glob("wakeL_00.txt")):
+            if find_wake_file(data_dir, 0) is not None:
                 self._effective_type = "round"
-            elif list(data_dir.glob("wakeL_01.txt")):
+            elif find_wake_file(data_dir, 1) is not None:
                 # Could be either; check if Wcc exists or magn/elec dirs nearby
                 if list(data_dir.glob("Wcc_odd.txt")) or has_magn or has_elec:
                     self._effective_type = "recta"
@@ -405,7 +402,7 @@ class PostProcessor:
         """
         count = 0
         for m in range(1, 1000, 2):  # odd: 1, 3, 5, ...
-            if (data_dir / f"wakeL_{m:02d}.txt").exists():
+            if find_wake_file(data_dir, m) is not None:
                 count += 1
             else:
                 break

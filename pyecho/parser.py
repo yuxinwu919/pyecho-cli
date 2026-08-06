@@ -43,6 +43,35 @@ _GEOMETRY_DIRS: tuple[str, ...] = ("round", "magn", "elec")
 #: "wakeL_XX.txt" (macOS binary). Both are accepted.
 _WAKE_FILE_PATTERN = re.compile(r"wakeL_(\d{2})\.txt$", re.IGNORECASE)
 
+
+def find_wake_file(data_dir: Path, mode: int) -> Path | None:
+    """Locate the ``wakeL_XX.txt`` file for *mode*, case-insensitively.
+
+    ECHO2D output trees may name the file ``WakeL_XX.txt`` (manual) or
+    ``wakeL_XX.txt`` (macOS binary).  A case-sensitive ``Path.exists()``
+    would silently miss the capital-W variant, so the directory is scanned
+    with the (case-insensitive) filename pattern instead.
+    """
+    if not data_dir.is_dir():
+        return None
+    stem = f"{mode:02d}"
+    pattern = re.compile(rf"[Ww]akeL_{stem}\.txt")
+    for p in data_dir.iterdir():
+        if p.is_file() and pattern.fullmatch(p.name):
+            return p
+    return None
+
+
+def list_wake_files(data_dir: Path) -> list[Path]:
+    """List ``wakeL_XX.txt`` files case-insensitively, sorted by name."""
+    if not data_dir.is_dir():
+        return []
+    return sorted(
+        p
+        for p in data_dir.iterdir()
+        if p.is_file() and _WAKE_FILE_PATTERN.fullmatch(p.name)
+    )
+
 #: Pattern for WakeMonitor binary files: ``WakeM_00_XXXXXX.bin``.
 _WAKE_MONITOR_PATTERN = re.compile(r"WakeM_(\d{2})_(\d{6})\.bin$", re.IGNORECASE)
 
@@ -115,9 +144,12 @@ def parse_wake_file(filepath: str | Path) -> dict:
             continue
         data_lines.append(stripped)
 
-    if len(data_lines) < 3:
+    # At least 2 header rows + 2 data rows: a single s-sample cannot define
+    # a grid step and would crash downstream (e.g. ``s[1] - s[0]``).
+    if len(data_lines) < 4:
         raise ParserError(
-            f"Wake file {filepath} has fewer than 3 data lines."
+            f"Wake file {filepath} has fewer than 4 data lines "
+            "(needs 2 header rows + at least 2 s/W data rows)."
         )
 
     # Parse header lines
@@ -159,10 +191,10 @@ def parse_wake_file(filepath: str | Path) -> dict:
                     f"Data line of {filepath} is not numeric: {dl!r}"
                 ) from exc
 
-    if not s_vals or len(s_vals) != len(w_vals):
+    if len(s_vals) < 2 or len(s_vals) != len(w_vals):
         raise ParserError(
-            f"Wake file {filepath} contains no usable s/W data rows "
-            f"({len(s_vals)} parsed)."
+            f"Wake file {filepath} contains fewer than 2 usable s/W data "
+            f"rows ({len(s_vals)} parsed)."
         )
 
     return {
@@ -441,11 +473,11 @@ class OutputLoader:
             If the wake file is not found or cannot be parsed.
         """
         data_dir = self._resolve_data_dir()
-        filename = f"wakeL_{mode:02d}.txt"
-        filepath = data_dir / filename
-
-        if not filepath.exists():
-            raise ParserError(f"Wake file not found: {filepath}")
+        filepath = find_wake_file(data_dir, mode)
+        if filepath is None:
+            raise ParserError(
+                f"Wake file not found: {data_dir / f'wakeL_{mode:02d}.txt'}"
+            )
 
         parsed = parse_wake_file(filepath)
         return (
@@ -468,7 +500,7 @@ class OutputLoader:
         data_dir = self._resolve_data_dir()
         result: dict[int, tuple] = {}
 
-        for fpath in sorted(data_dir.glob("wakeL_*.txt")):
+        for fpath in list_wake_files(data_dir):
             match = _WAKE_FILE_PATTERN.search(fpath.name)
             if not match:
                 continue
@@ -978,7 +1010,7 @@ class OutputLoader:
 
         # Also check if self.dir itself IS the data directory
         # (i.e., it contains wakeL files directly)
-        if list(self.dir.glob("wakeL_*.txt")):
+        if list_wake_files(self.dir):
             self._data_dir = self.dir
             # Try to infer from parent name (prefix match)
             parent_name = self.dir.name.lower()
@@ -999,7 +1031,7 @@ class OutputLoader:
             for gtype in _GEOMETRY_DIRS:
                 if child_name == gtype or child_name.startswith(gtype):
                     # Verify it contains wake files
-                    if list(child.glob("wakeL_*.txt")):
+                    if list_wake_files(child):
                         self._data_dir = child
                         self._geometry_type = gtype
                         logger.debug(

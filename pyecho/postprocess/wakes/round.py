@@ -223,9 +223,16 @@ def process_wake_dipole(
         np.column_stack([s, bunch_on_s]),
         np.column_stack([s, W_long]),
     )
+    # The kick factor is computed on the *pre-negation* cumulative
+    # integral, exactly as MATLAB PP_Wake_Dipole.m does:
+    #   [kick] = LossShape([s B],[s Wt])   with Wt = IntegrTr(h, W_long)
+    # (the negation is applied only to the stored transverse wake W_trans).
+    # This keeps the round-dipole kick sign consistent with the flat
+    # pipeline (loss on +IntegrTr) and with the physical convention
+    # k_⊥ = +∫λ·W_⊥ ds > 0 for a defocusing (positive) transverse wake.
     kick, rms_kick, _peak_trans = loss_shape(
         np.column_stack([s, bunch_on_s]),
-        np.column_stack([s, W_trans]),
+        np.column_stack([s, W_trans_raw]),
     )
 
     # ---- 7. Shift s ----
