@@ -422,6 +422,44 @@ def visualize_field(
         raise typer.Exit(1)
 
 
+@visualize_app.command("geometry")
+def visualize_geometry(
+    geometry_file: Annotated[str, typer.Argument(help="Geometry file path")],
+    units: Annotated[
+        str,
+        typer.Option("--units", "-u", help="Display units: cm, mm, m"),
+    ] = "cm",
+    output: Annotated[
+        Optional[str],
+        typer.Option("--output", "-o", help="Save plot to file"),
+    ] = None,
+    no_show: Annotated[
+        bool,
+        typer.Option("--no-show", help="Do not display plot window"),
+    ] = False,
+) -> None:
+    """Plot ECHO2D geometry structure (round or rectangular).
+
+    Draws the vacuum chamber boundary profile with material shading.
+    Supports round (z-r) and recta (z-y) geometry files.
+    """
+    from pyecho.visualize import plot_geometry
+
+    try:
+        fig, ax = plot_geometry(geometry_file, units=units)
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/bold red] Failed to plot geometry: {exc}")
+        raise typer.Exit(1)
+
+    if output:
+        fig.savefig(output, dpi=150, bbox_inches="tight")
+        console.print(f"[green]Plot saved to {output}[/green]")
+
+    if not no_show:
+        import matplotlib.pyplot as plt
+        plt.show()
+
+
 # ===================================================================
 # export commands
 # ===================================================================

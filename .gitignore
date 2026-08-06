@@ -38,6 +38,5 @@ coverage.xml
 
 # Misc
 *.db
-
-# Tests (not tracked in version control)
-tests/
+tests/comprehensive_test/output/
+tests/手动测试/
