@@ -78,60 +78,35 @@ from pyecho.parser import find_wake_file
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-#: Raw → V/pC conversion factor.
-_RAW_TO_PC: float = 1e-3
-
-
-# ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
 
 
-def _load_odd_mode_wakes(
-    data_dir: Path,
-    n_modes: int,
-) -> tuple[np.ndarray, dict]:
-    """Load raw wakeL files for odd modes 1, 3, 5, ..., (2*n_modes-1).
+def _clamp_mode_count(requested: int | None, available: int) -> int:
+    """Return the number of coupling-matrix modes to process.
 
-    Parameters
-    ----------
-    data_dir : Path
-        Directory containing ``wakeL_XX.txt`` files.
-    n_modes : int
-        Number of odd modes to load.
-
-    Returns
-    -------
-    s : np.ndarray
-        1-D longitudinal coordinate [m] (same for all modes).
-    raw_wakes : dict[int, np.ndarray]
-        Mapping ``{mode_number: W_raw_array}``.
+    Defaults to *available* (all rows present) when *requested* is
+    ``None``; otherwise caps *requested* at the rows actually available.
     """
-    raw_wakes: dict[int, np.ndarray] = {}
-    s_global: np.ndarray | None = None
+    if requested is None:
+        return available
+    return min(requested, available)
 
-    for i in range(1, n_modes + 1):
-        m = 2 * i - 1  # odd: 1, 3, 5, ...
-        fname = find_wake_file(data_dir, m)
-        if fname is None:
-            logger.warning("wakeL_%02d.txt not found; stopping at mode %d.", m, m - 2)
-            break
 
-        data = np.loadtxt(fname, comments="%")
-        # First two rows are header: [hr, offset], [D, sigma]
-        # D = total structure width [m] (= Width in input_in.txt, recta only)
-        # Remaining rows: [s, W_raw]
-        if s_global is None:
-            s_global = data[2:, 0].copy()
-        raw_wakes[m] = data[2:, 1].copy()
+def _sum_squared_wake(
+    matrix: np.ndarray,
+    n_modes: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``(Σᵢ kᵢ²·Wᵢ(s), k_values)`` for the first *n_modes* rows.
 
-    if s_global is None:
-        raise FileNotFoundError(f"No wakeL files found in {data_dir}")
-
-    return s_global, raw_wakes
+    Shared by the quadrupole/dipole wake computations, which sum the
+    per-mode ``k²·W`` products before integration.
+    """
+    k_values = matrix[1:n_modes + 1, 0].copy()
+    total: np.ndarray = np.zeros(matrix.shape[1] - 1, dtype=np.float64)
+    for i in range(n_modes):
+        total += k_values[i] ** 2 * matrix[i + 1, 1:]
+    return total, k_values
 
 
 def _check_matching_s(wcc: np.ndarray, wss: np.ndarray) -> None:
@@ -174,6 +149,68 @@ def _truncation_error(
     return float(n_modes) * numer / denom * 100.0
 
 
+def _assemble_coupling(
+    data_dir: str | Path,
+    n_modes: int,
+    *,
+    parity: str,
+) -> np.ndarray:
+    """Shared body of :func:`assemble_wcc` / :func:`assemble_wss`.
+
+    Loads the raw ``wakeL_XX.txt`` odd modes and builds the
+    ``(n_modes+1, ns+1)`` coupling matrix, normalising each mode by
+    ``cosh²(dy·k)`` (``parity="cosh"``) or ``sinh²(dy·k)``
+    (``parity="sinh"``).  For the ``sinh`` case with ``dy = 0``
+    (centered beam) the mode rows are zero-filled, because ``sinh(0) = 0``
+    would make the normalisation undefined (no dipole contribution on
+    axis).
+    """
+    data_dir = Path(data_dir)
+
+    fname_1 = find_wake_file(data_dir, 1)
+    if fname_1 is None:
+        raise FileNotFoundError(f"wakeL_01.txt not found in {data_dir}")
+
+    data_1 = np.loadtxt(fname_1, comments="%")
+    hr = data_1[0, 0]
+    offset = int(data_1[0, 1])
+    D = data_1[1, 0]
+
+    # FLAT geometry: dy = offset * hr  (NO +0.5!)
+    dy = offset * hr
+
+    s = data_1[2:, 0].copy()
+    ns = len(s)
+
+    # Allocate the coupling matrix: (n_modes+1) rows × (ns+1) cols.
+    # Row 0 = [D, s_0, ..., s_{ns-1}]; each mode row i starts with k_i.
+    matrix: np.ndarray = np.zeros((n_modes + 1, ns + 1), dtype=np.float64)
+    matrix[0, 1:] = s
+    matrix[0, 0] = D
+
+    denom_fn = np.cosh if parity == "cosh" else np.sinh
+
+    for i in range(1, n_modes + 1):
+        m = 2 * i - 1  # odd mode number
+        k = np.pi / D * m
+        matrix[i, 0] = k
+
+        fname = find_wake_file(data_dir, m)
+        if fname is None:
+            logger.warning("wakeL_%02d.txt not found; zero-filling mode %d.", m, m)
+            continue
+
+        data = np.loadtxt(fname, comments="%")
+        w_raw = data[2:, 1].copy()
+
+        if parity == "sinh" and dy == 0.0:
+            matrix[i, 1:] = 0.0
+        else:
+            matrix[i, 1:] = w_raw / denom_fn(dy * k) ** 2
+
+    return matrix
+
+
 # ---------------------------------------------------------------------------
 # PP_Wcc — cos-cos coupling matrix
 # ---------------------------------------------------------------------------
@@ -206,49 +243,7 @@ def assemble_wcc(
     np.ndarray
         Wcc matrix as described above.
     """
-    data_dir = Path(data_dir)
-
-    # Load the first mode to get hr, offset, D, sigma, and s-grid
-    # D = total structure width [m] (= Width in input_in.txt, recta only)
-    fname_1 = find_wake_file(data_dir, 1)
-    if fname_1 is None:
-        raise FileNotFoundError(f"wakeL_01.txt not found in {data_dir}")
-
-    data_1 = np.loadtxt(fname_1, comments="%")
-    hr = data_1[0, 0]
-    offset = int(data_1[0, 1])
-    D = data_1[1, 0]
-    sigma = data_1[1, 1]
-
-    # FLAT geometry: dy = offset * hr  (NO +0.5!)
-    dy = offset * hr
-
-    s = data_1[2:, 0].copy()
-    ns = len(s)
-
-    # Allocate Wcc matrix: (n_modes+1) rows × (ns+1) cols
-    Wcc: np.ndarray = np.zeros((n_modes + 1, ns + 1), dtype=np.float64)
-    Wcc[0, 1:] = s          # row 0, cols 1+ = s-grid
-    Wcc[0, 0] = D           # row 0, col 0 = structure width
-
-    for i in range(1, n_modes + 1):
-        m = 2 * i - 1  # odd mode number
-        k = np.pi / D * m
-        Wcc[i, 0] = k
-
-        fname = find_wake_file(data_dir, m)
-        if fname is None:
-            logger.warning("wakeL_%02d.txt not found; zero-filling mode %d.", m, m)
-            continue
-
-        data = np.loadtxt(fname, comments="%")
-        w_raw = data[2:, 1].copy()
-
-        # Normalize: W / cosh(dy * k)²
-        denom = np.cosh(dy * k) ** 2
-        Wcc[i, 1:] = w_raw / denom
-
-    return Wcc
+    return _assemble_coupling(data_dir, n_modes, parity="cosh")
 
 
 # ---------------------------------------------------------------------------
@@ -279,50 +274,7 @@ def assemble_wss(
     np.ndarray
         Wss matrix, same format as Wcc.
     """
-    data_dir = Path(data_dir)
-
-    fname_1 = find_wake_file(data_dir, 1)
-    if fname_1 is None:
-        raise FileNotFoundError(f"wakeL_01.txt not found in {data_dir}")
-
-    data_1 = np.loadtxt(fname_1, comments="%")
-    hr = data_1[0, 0]
-    offset = int(data_1[0, 1])
-    D = data_1[1, 0]
-
-    # FLAT geometry: dy = offset * hr
-    dy = offset * hr
-
-    s = data_1[2:, 0].copy()
-    ns = len(s)
-
-    Wss: np.ndarray = np.zeros((n_modes + 1, ns + 1), dtype=np.float64)
-    Wss[0, 1:] = s
-    Wss[0, 0] = D
-
-    for i in range(1, n_modes + 1):
-        m = 2 * i - 1
-        k = np.pi / D * m
-        Wss[i, 0] = k
-
-        fname = find_wake_file(data_dir, m)
-        if fname is None:
-            logger.warning("wakeL_%02d.txt not found; zero-filling mode %d.", m, m)
-            continue
-
-        data = np.loadtxt(fname, comments="%")
-        w_raw = data[2:, 1].copy()
-
-        # Normalize: W / sinh(dy * k)²
-        # When dy=0 (centered beam), sinh(0)=0 → Wss is undefined;
-        # return zeros (no dipole contribution at axis).
-        if dy == 0.0:
-            Wss[i, 1:] = 0.0
-        else:
-            denom = np.sinh(dy * k) ** 2
-            Wss[i, 1:] = w_raw / denom
-
-    return Wss
+    return _assemble_coupling(data_dir, n_modes, parity="sinh")
 
 
 # ---------------------------------------------------------------------------
@@ -369,27 +321,13 @@ def compute_wake_long_quad(
     """
     D = wcc[0, 0]
     s = wcc[0, 1:].copy()
-    ns = len(s)
     hs = float(s[1] - s[0])
 
-    # Number of modes
-    Nm_avail = wcc.shape[0] - 1  # rows after header
-    if n_modes is None:
-        n_modes = Nm_avail
-    else:
-        n_modes = min(n_modes, Nm_avail)
+    n_modes = _clamp_mode_count(n_modes, wcc.shape[0] - 1)
 
-    # Sum over modes
-    WL: np.ndarray = np.zeros(ns, dtype=np.float64)
-    WQ_sum: np.ndarray = np.zeros(ns, dtype=np.float64)
-
-    k_vals = wcc[1:n_modes + 1, 0].copy()
-
-    for i in range(n_modes):
-        k = k_vals[i]
-        w_mode = wcc[i + 1, 1:]        # Wcc(i, s) for all s
-        WL += w_mode
-        WQ_sum += k * k * w_mode       # k² * Wcc(i, s)
+    # Sum over modes: Wlong ∝ Σ Wcc(i, s);  Wquad ∝ Σ k²·Wcc(i, s)
+    WL = wcc[1:n_modes + 1, 1:].sum(axis=0)
+    WQ_sum, k_vals = _sum_squared_wake(wcc, n_modes)
 
     # Convert to physical units
     Wlong = WL * (2.0 / D) * 1e-3       # V/pC
@@ -450,20 +388,15 @@ def compute_wake_long_quad_dipole(
     D = result_cc["D"]
     hs = float(s[1] - s[0])
 
-    # Process SS (sin-sin) → Wdipole
-    Nm_ss_avail = wss.shape[0] - 1
-    if n_modes_ss is None:
-        n_modes_ss = Nm_ss_avail
-    else:
-        n_modes_ss = min(n_modes_ss, Nm_ss_avail)
-
-    WD_sum: np.ndarray = np.zeros(len(s), dtype=np.float64)
-    k_ss = wss[1:n_modes_ss + 1, 0].copy()
-
-    for i in range(n_modes_ss):
-        k = k_ss[i]
-        w_mode = wss[i + 1, 1:]
-        WD_sum += k * k * w_mode
+    # Process SS (sin-sin) → Wdipole.  The dipole uses the CC s-grid for
+    # its integration step, so both matrices must share the same number of
+    # longitudinal points.
+    if wss.shape[1] != wcc.shape[1]:
+        raise ValueError(
+            "Wcc and Wss must have the same number of longitudinal points."
+        )
+    n_modes_ss = _clamp_mode_count(n_modes_ss, wss.shape[0] - 1)
+    WD_sum, k_ss = _sum_squared_wake(wss, n_modes_ss)
 
     Wdipole_raw = integr_tr(hs, WD_sum)
     Wdipole = -Wdipole_raw * (2.0 / D) * 1e-6  # V/pC/mm
@@ -558,19 +491,8 @@ def compute_wake_zy(
     hs = float(s[1] - s[0])
     ny = len(y_offsets)
 
-    # Cos-cos modes
-    Nm_cc_avail = wcc.shape[0] - 1
-    if n_modes_cc is None:
-        n_modes_cc = Nm_cc_avail
-    else:
-        n_modes_cc = min(n_modes_cc, Nm_cc_avail)
-
-    # Sin-sin modes
-    Nm_ss_avail = wss.shape[0] - 1
-    if n_modes_ss is None:
-        n_modes_ss = Nm_ss_avail
-    else:
-        n_modes_ss = min(n_modes_ss, Nm_ss_avail)
+    n_modes_cc = _clamp_mode_count(n_modes_cc, wcc.shape[0] - 1)
+    n_modes_ss = _clamp_mode_count(n_modes_ss, wss.shape[0] - 1)
 
     # Use the smaller of the two mode counts, as both matrices are summed jointly
     n_modes = min(n_modes_cc, n_modes_ss)
@@ -769,19 +691,8 @@ def compute_wake_tm_tq_td(
     ns = len(s)
     hs = float(s[1] - s[0])
 
-    # Cos-cos modes
-    Nm_cc_avail = wcc.shape[0] - 1
-    if n_modes_cc is None:
-        n_modes_cc = Nm_cc_avail
-    else:
-        n_modes_cc = min(n_modes_cc, Nm_cc_avail)
-
-    # Sin-sin modes
-    Nm_ss_avail = wss.shape[0] - 1
-    if n_modes_ss is None:
-        n_modes_ss = Nm_ss_avail
-    else:
-        n_modes_ss = min(n_modes_ss, Nm_ss_avail)
+    n_modes_cc = _clamp_mode_count(n_modes_cc, wcc.shape[0] - 1)
+    n_modes_ss = _clamp_mode_count(n_modes_ss, wss.shape[0] - 1)
 
     # Use the smaller of the two mode counts, as both matrices are summed jointly
     n_modes = min(n_modes_cc, n_modes_ss)
@@ -924,8 +835,6 @@ def _add_bunch_and_loss_factors(
     result["bunch"] = bunch_on_s
 
     # Compute loss / kick factors
-    from pyecho.mathlib.loss import loss_shape
-
     if "Wlong" in result and result["Wlong"] is not None:
         loss, _spread, _peak = loss_shape(
             np.column_stack([s_wake, bunch_on_s]),
@@ -1004,12 +913,10 @@ def process_recta_wake(
             n_modes_cc=n_modes_cc,
             n_modes_ss=n_modes_ss,
         )
-        result["wcc"] = wcc
-        result["wss"] = wss
     else:
         result = compute_wake_long_quad(wcc, n_modes=n_modes_cc)
-        result["wcc"] = wcc
-        result["wss"] = wss
+    result["wcc"] = wcc
+    result["wss"] = wss
 
     # ── Load bunch profile & compute loss factors ──
     _add_bunch_and_loss_factors(magn_dir, result)

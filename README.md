@@ -1,5 +1,8 @@
 # pyecho-cli
 
+[![CI](https://github.com/yuxinwu919/pyecho-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/yuxinwu919/pyecho-cli/actions/workflows/ci.yml)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
+
 Python CLI toolkit for the [ECHO2D](https://echo4d.de) electromagnetic wakefield solver.
 
 Computes wake potentials and impedances of charged particle bunches in accelerator
@@ -115,8 +118,8 @@ python tests/comprehensive_test/scripts/run_full_test.py --quick
 
 The project follows a test-driven workflow:
 
-- **pytest** — 300+ unit and integration tests covering all CLI commands, the
-  ECHO2D file parsers, the `mathlib` numerics, and end-to-end round/recta runs
+- **pytest** — 552 unit tests covering all CLI commands, the ECHO2D file
+  parsers, the `mathlib` numerics, and end-to-end round/recta runs
 - **GitHub Actions** — CI runs the full test suite on every push and PR
 - **mypy** — static type checking over the `pyecho` package
 - **ruff** — linting and import sorting, configured in `pyproject.toml`
@@ -124,7 +127,7 @@ The project follows a test-driven workflow:
 ### Testing
 
 ```bash
-pytest                    # run all tests
+pytest tests/             # run all tests (552 tests)
 pytest tests/test_mathlib.py -v  # specific module
 ```
 

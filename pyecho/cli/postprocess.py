@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import logging
-import os
 from pathlib import Path
-from typing import Annotated, Optional, Any
+from typing import Annotated, Any, Optional
 
 import numpy as np
 import typer
@@ -46,6 +43,36 @@ def _fmt_factor(value: float | None, fmt: str = ".6f") -> str:
     if value > 0:
         return f"[green]{text}[/green]"
     return f"[yellow]{text}[/yellow]"
+
+
+def _plot_wake_result(wake_result: Any, geo_type: str, wake_out: Path) -> None:
+    """Generate and save wake plots (best-effort)."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        if geo_type == "round":
+            from pyecho.visualize import plot_round_wake
+            fig, _ = plot_round_wake(wake_result)
+        else:
+            from pyecho.visualize import plot_recta_wake
+            data_dir = wake_out.parent.parent  # run dir
+            for sub in ("magn", "elec"):
+                cand = data_dir / sub
+                if cand.is_dir():
+                    data_dir = cand
+                    break
+            from pyecho.parser import load_bunch_profile
+            # Try to load bunch from magn/ directory
+            magn_dir = data_dir / "magn" if (data_dir / "magn").is_dir() else data_dir
+            _, bunch = load_bunch_profile(magn_dir, 0, wake_result.s)
+            fig, _ = plot_recta_wake(wake_result, bunch=bunch)
+
+        fig.savefig(str(wake_out / "wake_plot.png"), dpi=150, bbox_inches="tight")
+        plt.close(fig)
+    except Exception:
+        pass  # plotting is best-effort
 
 
 @postprocess_app.command("wake")
@@ -99,6 +126,7 @@ def postprocess_wake(
     wake_out.mkdir(parents=True, exist_ok=True)
 
     if isinstance(result, RoundWakeResult):
+        kd = result.kick_dipole if result.kick_dipole is not None else 0.0
         summary_table = Table(title="✓ Wake processed — Round Wake Result")
         summary_table.add_column("Quantity")
         summary_table.add_column("Value", justify="right")
@@ -107,15 +135,14 @@ def postprocess_wake(
         summary_table.add_row("Peak", _fmt_factor(result.peak, ".4f"), "V/pC")
         summary_table.add_row("RMS spread", _fmt_factor(result.rms_spread, ".4f"), "V/pC")
         if result.Wdipole is not None:
-            kd = result.kick_dipole if result.kick_dipole is not None else 0.0
             summary_table.add_row("Kick (dipole)", _fmt_factor(kd, ".4f"), "V/pC/m")
         console.print(summary_table)
         # Save monopole (m=0) — longitudinal wake
         _save_wake_round_data(result.s, result.Wlong, "monopole", "V/pC", wake_out / "wake_monopole.txt")
         summary_lines = [
-            f"Geometry: round",
-            f"",
-            f"[Monopole (m=0)] — longitudinal wake potential",
+            "Geometry: round",
+            "",
+            "[Monopole (m=0)] — longitudinal wake potential",
             f"  Loss_long:  {result.loss_long:.6f} V/pC",
             f"  Peak:       {result.peak:.4f} V/pC",
             f"  RMS spread: {result.rms_spread:.4f} V/pC",
@@ -123,10 +150,9 @@ def postprocess_wake(
         # Save dipole (m=1) if available
         if result.Wdipole is not None:
             _save_wake_round_data(result.s, result.Wdipole, "dipole", "V/pC/m²", wake_out / "wake_dipole.txt")
-            kd = result.kick_dipole if result.kick_dipole is not None else 0.0
             summary_lines.extend([
                 "",
-                f"[Dipole (m=1)] — modal coefficient",
+                "[Dipole (m=1)] — modal coefficient",
                 f"  Kick_dipole: {kd:.4f} V/pC/m",
             ])
             console.print(f"  [dim]Dipole (m=1) saved, Kick_dipole = {kd:.4f} V/pC/m[/dim]")
@@ -163,22 +189,15 @@ def postprocess_wake(
             offset = _read_offset_from_dir(data_dir)
             from pyecho.parser import load_bunch_profile
             _, bunch = load_bunch_profile(data_dir, offset, result.s)
-            fig, axes = plot_recta_wake(result, bunch=bunch)
-            if output:
-                save_path = f"{output}_wake.png"
-            else:
-                save_path = str(wake_out / "wake_plot.png")
-            fig.savefig(save_path, dpi=150, bbox_inches="tight")
-            console.print(f"  [dim]Plot saved to {save_path}[/dim]")
-            plt.show()
+            fig, _axes = plot_recta_wake(result, bunch=bunch)
         else:
             from pyecho.visualize import plot_round_wake
+            fig, _axes = plot_round_wake(result)
 
-            fig, axes = plot_round_wake(result)
-            save_path = str(wake_out / "wake_plot.png") if not output else f"{output}_wake.png"
-            fig.savefig(save_path, dpi=150, bbox_inches="tight")
-            console.print(f"  [dim]Plot saved to {save_path}[/dim]")
-            plt.show()
+        save_path = f"{output}_wake.png" if output else str(wake_out / "wake_plot.png")
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        console.print(f"  [dim]Plot saved to {save_path}[/dim]")
+        plt.show()
 
 
 @postprocess_app.command("impedance")
@@ -202,7 +221,6 @@ def postprocess_impedance(
       echo2d postprocess impedance . -o impedance.csv # save CSV
       echo2d postprocess impedance . -m 0 --plot      # plot Re(Z)/Im(Z)
     """
-    from pathlib import Path as _Path
     from pyecho.project import resolve_run_dir
     from pyecho.parser import OutputLoader, ParserError
     from pyecho.mathlib.fft import wake2impedance
@@ -213,7 +231,7 @@ def postprocess_impedance(
         output_dir = str(resolved)
         console.print(f"  [dim]Run directory: {output_dir}[/dim]")
 
-    out_path = _Path(output_dir).resolve()
+    out_path = Path(output_dir).resolve()
     loader = OutputLoader(out_path)
 
     # 1. Load wake data for the requested mode
@@ -286,7 +304,7 @@ def postprocess_impedance(
 
     # 5. Save CSV: f, Re(Z), Im(Z), |Z|
     if output:
-        out_csv = _Path(output)
+        out_csv = Path(output)
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         np.savetxt(
             out_csv,
@@ -332,7 +350,7 @@ def postprocess_impedance(
         fig.tight_layout()
 
         if output:
-            save_path = str(_Path(output).with_suffix(".png"))
+            save_path = str(Path(output).with_suffix(".png"))
         else:
             processed_dir = _find_processed_dir(out_path) / "wake"
             processed_dir.mkdir(parents=True, exist_ok=True)
@@ -445,18 +463,15 @@ def postprocess_field(
       echo2d postprocess field . -m 1 -n 1 -c Ez --animate field.gif
       echo2d postprocess field . -m 0 -n 2 -c Ep -g round --plot-3d
     """
-    from pathlib import Path as _Path
     from pyecho.project import resolve_run_dir
     from pyecho.parser import OutputLoader
     from pyecho.postprocess.fields import (
-        process_field_monitor,
         synthesize_total_field_from_loader,
         extract_point_monitor,
         save_point_monitor,
         animate_field_monitor,
         plot_field_3d,
     )
-    import numpy as np
 
     # Resolve run ID to directory
     resolved = resolve_run_dir(output_dir)
@@ -464,7 +479,7 @@ def postprocess_field(
         output_dir = str(resolved)
         console.print(f"  [dim]Run directory: {output_dir}[/dim]")
 
-    out_path = _Path(output_dir).resolve()
+    out_path = Path(output_dir).resolve()
     loader = OutputLoader(out_path)
 
     # --list: show available monitors with details
@@ -516,7 +531,7 @@ def postprocess_field(
 
         if total is not None:
             # Save as MonitorTotal format
-            total_dir = _Path(total)
+            total_dir = Path(total)
             total_dir.mkdir(parents=True, exist_ok=True)
             out_file = total_dir / f"MonitorTotal_N{monitor_id:02d}.txt"
             _save_monitor_total(out_file, total_field, component, "z", D or 0.05,
@@ -580,7 +595,7 @@ def postprocess_field(
             f"points={len(trace)}[/green]"
         )
         if output:
-            save_point_monitor(_Path(output), T, trace, monitor.field_component, geometry)
+            save_point_monitor(Path(output), T, trace, monitor.field_component, geometry)
             console.print(f"  [dim]PointMonitor saved to {output}[/dim]")
 
     # --animate
@@ -632,7 +647,6 @@ def postprocess_particles(
       echo2d postprocess particles . --phase-space    # phase-space plots
       echo2d postprocess particles . --to-astra out.astra -q 1e-9
     """
-    from pathlib import Path as _Path
     from pyecho.project import resolve_run_dir
     from pyecho.parser import OutputLoader
     from pyecho.postprocess.particles import (
@@ -644,7 +658,7 @@ def postprocess_particles(
         output_dir = str(resolved)
         console.print(f"  [dim]Run directory: {output_dir}[/dim]")
 
-    out_path = _Path(output_dir).resolve()
+    out_path = Path(output_dir).resolve()
     loader = OutputLoader(out_path)
     data_dir = loader._resolve_data_dir()
     part_file = data_dir / "particles.out"
@@ -686,7 +700,7 @@ def postprocess_particles(
     )
 
     if output:
-        _Path(output).write_text(
+        Path(output).write_text(
             f"# ECHO2D Particle Statistics\n"
             f"# Np = {Np}\n"
             + "\n".join(f"# {k} = {v}" for k, v in stats.items()),
@@ -778,7 +792,6 @@ def postprocess_wake_monitor(
     """
     from pyecho.project import resolve_run_dir
     from pyecho.parser import OutputLoader
-    import numpy as np
 
     resolved = resolve_run_dir(output_dir)
     if resolved is not None:
@@ -872,7 +885,6 @@ def postprocess_beam_moments(
     """
     from pyecho.project import resolve_run_dir
     from pyecho.parser import OutputLoader
-    import numpy as np
 
     resolved = resolve_run_dir(output_dir)
     if resolved is not None:
@@ -958,7 +970,6 @@ def postprocess_all(
     """
     from pyecho.project import resolve_run_dir
     from pyecho.parser import OutputLoader
-    import numpy as np
 
     skip_set = set(skip or [])
 
@@ -1024,8 +1035,9 @@ def postprocess_all(
                     f"kick_dipole={wake_result.kick_dipole:.4f} V/pC/mm"
                 )
 
-            _try_update_processed_manifest(out_path,
-                loss_long=wake_result.loss_long if geo_type == "round" else wake_result.loss_long,
+            _try_update_processed_manifest(
+                out_path,
+                loss_long=wake_result.loss_long,
                 peak=getattr(wake_result, "peak", None),
                 kick_quad=getattr(wake_result, "kick_quad", None),
                 kick_dipole=getattr(wake_result, "kick_dipole", None),
@@ -1424,36 +1436,6 @@ def postprocess_report(
             title="HTML Report",
         )
     )
-
-
-def _plot_wake_result(wake_result: Any, geo_type: str, wake_out: Path) -> None:
-    """Generate and save wake plots (best-effort)."""
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        if geo_type == "round":
-            from pyecho.visualize import plot_round_wake
-            fig, _ = plot_round_wake(wake_result)
-        else:
-            from pyecho.visualize import plot_recta_wake
-            data_dir = wake_out.parent.parent  # run dir
-            for sub in ("magn", "elec"):
-                cand = data_dir / sub
-                if cand.is_dir():
-                    data_dir = cand
-                    break
-            from pyecho.parser import load_bunch_profile
-            # Try to load bunch from magn/ directory
-            magn_dir = data_dir / "magn" if (data_dir / "magn").is_dir() else data_dir
-            _, bunch = load_bunch_profile(magn_dir, 0, wake_result.s)
-            fig, _ = plot_recta_wake(wake_result, bunch=bunch)
-
-        fig.savefig(str(wake_out / "wake_plot.png"), dpi=150, bbox_inches="tight")
-        plt.close(fig)
-    except Exception:
-        pass  # plotting is best-effort
 
 
 # ===================================================================

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence, cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
@@ -37,6 +37,58 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Point extraction from field monitors
 # ---------------------------------------------------------------------------
+
+
+def _trace_at_pos(
+    F: np.ndarray,
+    space_axis: np.ndarray,
+    pos: float,
+) -> np.ndarray:
+    """Linearly interpolate a ``(nt, nspace)`` slice at a fixed coordinate.
+
+    Returns the 1-D time trace at ``pos`` by interpolating along the
+    space axis (equivalent to MATLAB ``interp1``).
+    """
+    interp_idx = np.interp(pos, space_axis, np.arange(len(space_axis)))
+    idx_lo = int(np.floor(interp_idx))
+    idx_hi = min(idx_lo + 1, len(space_axis) - 1)
+    frac = interp_idx - idx_lo
+    return cast(np.ndarray, F[:, idx_lo] * (1 - frac) + F[:, idx_hi] * frac)
+
+
+def _interp_2d_monitor(
+    F: np.ndarray,
+    time_axis: np.ndarray,
+    space_axis: np.ndarray,
+    t: float | None,
+    pos: float | None,
+) -> float | np.ndarray:
+    """Extract from a 2-D ``(nt, nspace)`` monitor slice.
+
+    Handles every combination of the requested coordinates:
+
+    - ``t`` and ``pos`` given: single point → scalar
+    - ``pos`` only: 1-D trace over time at the fixed space coordinate
+    - ``t`` only: single point at the median space coordinate
+    - neither: the raw slice
+
+    ``space_axis`` is ``R`` for a ``(nt, nr)`` monitor and ``Z`` for a
+    ``(nt, nz)`` one.
+    """
+    if t is not None and pos is not None:
+        interp = RegularGridInterpolator(
+            (time_axis, space_axis), F, bounds_error=False, fill_value=0.0
+        )
+        return float(interp(np.array([[t, pos]]))[0])
+    if pos is not None:
+        return _trace_at_pos(F, space_axis, pos)
+    if t is not None:
+        interp = RegularGridInterpolator(
+            (time_axis, space_axis), F, bounds_error=False, fill_value=0.0
+        )
+        pos_mid = float(np.median(space_axis))
+        return float(interp(np.array([[t, pos_mid]]))[0])
+    return F
 
 
 def extract_field_at_point(
@@ -94,73 +146,30 @@ def extract_field_at_point(
             return F
 
     if F.ndim == 2:
-        # 2-D: (nt, nspace) where nspace could be nz or nr
-        # Try to determine if second axis is Z or R by comparing sizes
-        nrows, ncols = F.shape
-        if ncols == len(R):
-            # (nt, nr) — fixed z
-            if t is not None and r is not None:
-                interp = RegularGridInterpolator(
-                    (T, R), F, bounds_error=False, fill_value=0.0
-                )
-                return float(interp(np.array([[t, r]]))[0])
-            elif r is not None:
-                # Extract 1-D at fixed r over time
-                interp_r = np.interp(r, R, np.arange(len(R)))
-                idx_lo = int(np.floor(interp_r))
-                idx_hi = min(idx_lo + 1, len(R) - 1)
-                frac: float = interp_r - idx_lo
-                return cast(np.ndarray, F[:, idx_lo] * (1 - frac) + F[:, idx_hi] * frac)
-            elif t is not None:
-                interp = RegularGridInterpolator(
-                    (T, R), F, bounds_error=False, fill_value=0.0
-                )
-                r_mid = float(np.median(R))
-                return float(interp(np.array([[t, r_mid]]))[0])
-            else:
-                return F
-        elif ncols == len(Z):
-            # (nt, nz) — fixed r
-            if t is not None and z is not None:
-                interp = RegularGridInterpolator(
-                    (T, Z), F, bounds_error=False, fill_value=0.0
-                )
-                return float(interp(np.array([[t, z]]))[0])
-            elif z is not None:
-                interp_z = np.interp(z, Z, np.arange(len(Z)))
-                idx_lo = int(np.floor(interp_z))
-                idx_hi = min(idx_lo + 1, len(Z) - 1)
-                frac = interp_z - idx_lo
-                return cast(np.ndarray, F[:, idx_lo] * (1 - frac) + F[:, idx_hi] * frac)
-            elif t is not None:
-                # t-only: interpolate at the median z (mirrors the (nt, nr)
-                # branch which uses median(r))
-                interp = RegularGridInterpolator(
-                    (T, Z), F, bounds_error=False, fill_value=0.0
-                )
-                z_mid = float(np.median(Z))
-                return float(interp(np.array([[t, z_mid]]))[0])
-            else:
-                return F
+        # 2-D: (nt, nspace) where the space axis is R (fixed z) or Z (fixed r)
+        if F.shape[1] == len(R):
+            return _interp_2d_monitor(F, T, R, t, r)
+        if F.shape[1] == len(Z):
+            return _interp_2d_monitor(F, T, Z, t, z)
 
     if F.ndim == 3:
         # 3-D: (nt, nz, nr) — full 3-D monitor
-        # If t is given, interpolate at fixed (t, z, r) → scalar
-        # If t is None but z,r given, extract 1-D trace over time
         if t is not None:
-            # Single point interpolation
+            # Single point interpolation at the specified (t, z, r)
             points = [t]
             axes = [T]
             if z is not None:
-                points.append(z); axes.append(Z)
+                points.append(z)
+                axes.append(Z)
             if r is not None:
-                points.append(r); axes.append(R)
+                points.append(r)
+                axes.append(R)
             interp = RegularGridInterpolator(
                 tuple(axes), F, bounds_error=False, fill_value=0.0
             )
             return float(interp(np.atleast_2d(points))[0])
-        elif z is not None and r is not None:
-            # Extract 1-D trace over time at fixed (z, r)
+        if z is not None and r is not None:
+            # 1-D trace over time at a fixed (z, r)
             trace: np.ndarray = np.zeros(len(T), dtype=np.float64)
             for i in range(len(T)):
                 interp_zr = RegularGridInterpolator(
@@ -168,21 +177,17 @@ def extract_field_at_point(
                 )
                 trace[i] = float(interp_zr(np.array([[z, r]]))[0])
             return trace
-        elif z is not None:
-            # Extract 2-D (t, z) slice at fixed r
+        if z is not None:
+            # 2-D (t, z) slice at the median r
             r_mid = float(np.median(R))
-            interp_z = RegularGridInterpolator(
-                (Z,), np.zeros(len(Z)), bounds_error=False, fill_value=0.0
-            )
             r_idx = int(np.interp(r_mid, R, np.arange(len(R))))
-            return F[:, :, r_idx]  # (nt, nz) slice
-        elif r is not None:
-            # Extract 2-D (t, r) slice at fixed z
+            return F[:, :, r_idx]
+        if r is not None:
+            # 2-D (t, r) slice at the median z
             z_mid = float(np.median(Z))
             z_idx = int(np.interp(z_mid, Z, np.arange(len(Z))))
-            return F[:, z_idx, :]  # (nt, nr) slice
-        else:
-            return F
+            return F[:, z_idx, :]
+        return F
 
     logger.warning(
         "Unsupported monitor dimensionality %dD; returning raw data.", F.ndim
@@ -221,11 +226,11 @@ def process_field_monitor(
     field = extract_field_at_point(monitor, t=point_t, z=point_z, r=point_r)
 
     coords = []
-    if point_t is None and hasattr(monitor, "T") and len(monitor.T) > 1:
+    if point_t is None and len(monitor.T) > 1:
         coords.append(monitor.T)
-    if point_z is None and hasattr(monitor, "Z") and len(monitor.Z) > 1:
+    if point_z is None and len(monitor.Z) > 1:
         coords.append(monitor.Z)
-    if point_r is None and hasattr(monitor, "R") and len(monitor.R) > 1:
+    if point_r is None and len(monitor.R) > 1:
         coords.append(monitor.R)
 
     return {
@@ -503,8 +508,6 @@ def extract_point_monitor(
     trace : np.ndarray
         Extracted field values at (z, r) for each time step.
     """
-    from scipy.interpolate import RegularGridInterpolator
-
     F = monitor.F
     T = monitor.T
     Z = monitor.Z
@@ -615,13 +618,8 @@ def _plot_field_2d(
     -------
     plt.Axes
     """
-    # Transpose: pcolormesh expects (nr, nz) for 1-D X=z, Y=r
-    if F_slice.shape == (len(Z), len(R)):
-        F_plot = F_slice.T
-    elif F_slice.shape == (len(R), len(Z)):
-        F_plot = F_slice
-    else:
-        F_plot = F_slice.T
+    # pcolormesh expects (nr, nz) for 1-D X=z, Y=r; transpose otherwise
+    F_plot = F_slice if F_slice.shape == (len(R), len(Z)) else F_slice.T
 
     # Gouraud shading for smooth interpolation between grid points
     Z_mm = Z * 1e3
