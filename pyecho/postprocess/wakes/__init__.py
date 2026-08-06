@@ -10,19 +10,25 @@ flat  : Flat (rectangular) geometry wake processing.
     - :func:`assemble_wss`          — PP_Wss.m
     - :func:`compute_wake_long_quad` — PP_WakeLQ.m
     - :func:`compute_wake_long_quad_dipole` — PP_WakeLQD.m
+    - :func:`compute_wake_zy`       — PP_WakeZY.m (2-D (y, s) map)
+    - :func:`compute_wake_off_axis` — PP_WakeZY.m (single (y0, y))
+    - :func:`compute_wake_tm_tq_td` — PP_WakeL_Tm_Tq_Td.m
     - :func:`process_flat_wake`      — full pipeline
 """
 
-from pyecho.postprocess.wakes.round import (
-    process_wake_monopole,
-    process_wake_dipole,
-)
 from pyecho.postprocess.wakes.flat import (
     assemble_wcc,
     assemble_wss,
     compute_wake_long_quad,
     compute_wake_long_quad_dipole,
+    compute_wake_off_axis,
+    compute_wake_tm_tq_td,
+    compute_wake_zy,
     process_flat_wake,
+)
+from pyecho.postprocess.wakes.round import (
+    process_wake_dipole,
+    process_wake_monopole,
 )
 
 __all__ = [
@@ -34,5 +40,8 @@ __all__ = [
     "assemble_wss",
     "compute_wake_long_quad",
     "compute_wake_long_quad_dipole",
+    "compute_wake_zy",
+    "compute_wake_off_axis",
+    "compute_wake_tm_tq_td",
     "process_flat_wake",
 ]

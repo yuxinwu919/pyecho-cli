@@ -27,6 +27,9 @@ Key MATLAB → Python equivalences
 * ``PP_Wss.m`` → :func:`assemble_wss`
 * ``PP_WakeLQ.m`` → :func:`compute_wake_long_quad`
 * ``PP_WakeLQD.m`` → :func:`compute_wake_long_quad_dipole`
+* ``PP_WakeZY.m`` → :func:`compute_wake_zy` (2-D map over witness
+  offsets; single-pair case via :func:`compute_wake_off_axis`)
+* ``PP_WakeL_Tm_Tq_Td.m`` → :func:`compute_wake_tm_tq_td`
 * ``IntegrTr.m`` → :func:`pyecho.mathlib.integration.integr_tr`
 * ``LossShape.m`` → :func:`pyecho.mathlib.loss.loss_shape`
 
@@ -128,6 +131,39 @@ def _load_odd_mode_wakes(
         raise FileNotFoundError(f"No wakeL files found in {data_dir}")
 
     return s_global, raw_wakes
+
+
+def _check_matching_s(wcc: np.ndarray, wss: np.ndarray) -> None:
+    """Raise :class:`ValueError` unless Wcc and Wss share the s-grid.
+
+    Both matrices must have the same number of columns and identical
+    longitudinal coordinates in row 0, so that per-mode rows can be summed
+    element-wise.  Differing *mode* counts are fine (only the common modes
+    are used); differing *s*-grids are not.
+    """
+    if wcc.shape[1] != wss.shape[1] or not np.allclose(wcc[0, 1:], wss[0, 1:]):
+        raise ValueError(
+            "Wcc and Wss must share the same longitudinal s-grid "
+            "(different column count or first data row)."
+        )
+
+
+def _truncation_error(
+    n_modes: int,
+    last_mode: np.ndarray,
+    all_modes: np.ndarray,
+) -> float:
+    """MATLAB ``error_*`` truncation-error estimate, in percent.
+
+    Reproduces ``Nm·Σ(last_mode²)/ΣΣ(all_modes²)·100`` from
+    ``PP_WakeL_Tm_Tq_Td.m``.  Returns ``0.0`` when the summed modal energy
+    vanishes (avoids a 0/0 NaN on axis).
+    """
+    denom = float(np.sum(all_modes * all_modes))
+    if denom == 0.0:
+        return 0.0
+    numer = float(np.sum(last_mode * last_mode))
+    return float(n_modes) * numer / denom * 100.0
 
 
 # ---------------------------------------------------------------------------
@@ -436,8 +472,147 @@ def compute_wake_long_quad_dipole(
 
 
 # ---------------------------------------------------------------------------
-# PP_WakeZY — off-axis wake at arbitrary (y0, y)
+# PP_WakeZY — off-axis wake at arbitrary (y0, y) and 2-D maps
 # ---------------------------------------------------------------------------
+
+
+def compute_wake_zy(
+    wcc: np.ndarray,
+    wss: np.ndarray,
+    y_offsets: np.ndarray,
+    y0: float,
+    n_modes_cc: int | None = None,
+    n_modes_ss: int | None = None,
+) -> dict:
+    """Compute off-axis Wz/Wy wakes on a 2-D ``(y, s)`` map.
+
+    Replicates ``PostProcessor2D/Wakes/Flat/PP_WakeZY.m`` exactly, but for
+    a *range* of witness offsets instead of a single one: ``y_offsets`` is a
+    1-D array of witness transverse offsets (fixed source offset ``y0``), so
+    each wake is returned as a 2-D array indexed by ``(witness_offset, s)``.
+    Use :func:`compute_wake_off_axis` for the single-``(y0, y)`` case.
+
+    For a source at offset *y0* and witnesses at offsets *y* (all in
+    metres), the per-mode terms are::
+
+        Fz(k, y, s) = Wcc(k, s)·cosh(k·y)·cosh(k·y₀)
+                    + Wss(k, s)·sinh(k·y)·sinh(k·y₀)
+        Fy(k, y, s) = k·[Wcc(k, s)·sinh(k·y)·cosh(k·y₀)
+                       + Wss(k, s)·cosh(k·y)·sinh(k·y₀)]
+
+    and the physical wakes are::
+
+        Wz(y, s) = (2/D)·10⁻³ · Σₖ Fz(k, y, s)
+        Wy(y, s) = −(2/D)·10⁻³ · IntegrTr(hₛ, Σₖ Fy(k, y, s))
+
+    Parameters
+    ----------
+    wcc : np.ndarray
+        Wcc matrix from :func:`assemble_wcc` (shape ``(n_modes+1, ns+1)``).
+    wss : np.ndarray
+        Wss matrix from :func:`assemble_wss` (same layout).
+    y_offsets : np.ndarray
+        1-D array of witness transverse offsets [m].
+    y0 : float
+        Source transverse offset [m].
+    n_modes_cc : int, optional
+        Number of cos-cos modes to use.  Defaults to all available.
+    n_modes_ss : int, optional
+        Number of sin-sin modes to use.  Defaults to all available.
+
+    Returns
+    -------
+    dict
+        Keys:
+        - ``y_offsets``: np.ndarray (ny,) — witness offsets [m]
+        - ``s``: np.ndarray (ns,) — longitudinal coordinate [m]
+        - ``y0``: float — source offset [m]
+        - ``Wz``: np.ndarray (ny, ns) — longitudinal wake [V/pC]
+        - ``Wy``: np.ndarray (ny, ns) — transverse wake [V/pC]
+        - ``D``: float — structure width [m]
+        - ``k_cc``, ``k_ss``: np.ndarray — wavenumbers used [rad/m]
+
+    Raises
+    ------
+    ValueError
+        If ``y_offsets`` is not 1-D, Wcc/Wss s-grids differ, or fewer than
+        one usable mode is present.
+    """
+    y_offsets = np.atleast_1d(np.asarray(y_offsets, dtype=np.float64))
+    if y_offsets.ndim != 1:
+        raise ValueError(f"y_offsets must be 1-D, got shape {y_offsets.shape}")
+
+    _check_matching_s(wcc, wss)
+
+    D = wcc[0, 0]
+    s = wcc[0, 1:].copy()
+    ns = len(s)
+    hs = float(s[1] - s[0])
+    ny = len(y_offsets)
+
+    # Cos-cos modes
+    Nm_cc_avail = wcc.shape[0] - 1
+    if n_modes_cc is None:
+        n_modes_cc = Nm_cc_avail
+    else:
+        n_modes_cc = min(n_modes_cc, Nm_cc_avail)
+
+    # Sin-sin modes
+    Nm_ss_avail = wss.shape[0] - 1
+    if n_modes_ss is None:
+        n_modes_ss = Nm_ss_avail
+    else:
+        n_modes_ss = min(n_modes_ss, Nm_ss_avail)
+
+    # Use the smaller of the two mode counts, as both matrices are summed jointly
+    n_modes = min(n_modes_cc, n_modes_ss)
+    if n_modes <= 0:
+        raise ValueError("At least one usable mode is required in Wcc and Wss.")
+
+    Fz_sum: np.ndarray = np.zeros((ny, ns), dtype=np.float64)
+    Fy_sum: np.ndarray = np.zeros((ny, ns), dtype=np.float64)
+
+    for i in range(n_modes):
+        k = wcc[i + 1, 0]            # wavenumber [rad/m]
+
+        wcc_i = wcc[i + 1, 1:]       # Wcc(k, s)  for all s
+        wss_i = wss[i + 1, 1:]       # Wss(k, s)  for all s
+
+        cosh_ky = np.cosh(k * y_offsets)   # (ny,)
+        sinh_ky = np.sinh(k * y_offsets)   # (ny,)
+        chy0 = float(np.cosh(k * y0))
+        shy0 = float(np.sinh(k * y0))
+
+        # MATLAB:
+        #   Fz = Wcc.*cosh(M*y)*cosh(M*y0) + Wss.*sinh(M*y)*sinh(M*y0)
+        #   Fy = M*Wcc.*sinh(M*y)*cosh(M*y0) + M*Wss.*cosh(M*y)*sinh(M*y0)
+        Fz_sum += (
+            wcc_i[None, :] * (cosh_ky[:, None] * chy0)
+            + wss_i[None, :] * (sinh_ky[:, None] * shy0)
+        )
+        Fy_sum += k * (
+            wcc_i[None, :] * (sinh_ky[:, None] * chy0)
+            + wss_i[None, :] * (cosh_ky[:, None] * shy0)
+        )
+
+    # Integrate Wy per witness offset, then scale: 2/D · 1e-3
+    scale = 2.0 / D * 1e-3
+    Wz_map = Fz_sum * scale
+    Wy_int: np.ndarray = np.empty_like(Fy_sum)
+    for j in range(ny):
+        Wy_int[j, :] = integr_tr(hs, Fy_sum[j, :])
+    Wy_map = -Wy_int * scale
+
+    return {
+        "y_offsets": y_offsets,
+        "s": s,
+        "y0": y0,
+        "Wz": Wz_map,
+        "Wy": Wy_map,
+        "D": D,
+        "k_cc": wcc[1:n_modes + 1, 0].copy(),
+        "k_ss": wss[1:n_modes + 1, 0].copy(),
+    }
 
 
 def compute_wake_off_axis(
@@ -458,6 +633,10 @@ def compute_wake_off_axis(
                              + Wss·sinh(k·y)·sinh(k·y₀)]
         Wy(s) = −(2/D)·10⁻³·IntegrTr(hₛ, Σ k·[Wcc·sinh(k·y)·cosh(k·y₀)
                                                + Wss·cosh(k·y)·sinh(k·y₀)])
+
+    This is the single-``(y0, y)`` specialisation of :func:`compute_wake_zy`;
+    its numerical results are identical to calling that function with
+    ``y_offsets=[y]``.
 
     Parameters
     ----------
@@ -480,6 +659,103 @@ def compute_wake_off_axis(
         Keys: ``s`` (np.ndarray [m]), ``Wz`` [V/pC],
         ``Wy`` [V/pC], ``D`` [m], ``k_cc``, ``k_ss``.
     """
+    result = compute_wake_zy(
+        wcc,
+        wss,
+        y_offsets=np.array([y], dtype=np.float64),
+        y0=y0,
+        n_modes_cc=n_modes_cc,
+        n_modes_ss=n_modes_ss,
+    )
+    return {
+        "s": result["s"],
+        "Wz": result["Wz"][0],
+        "Wy": result["Wy"][0],
+        "D": result["D"],
+        "k_cc": result["k_cc"],
+        "k_ss": result["k_ss"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# PP_WakeL_Tm_Tq_Td — monopole / quadrupole / dipole wakes off axis
+# ---------------------------------------------------------------------------
+
+
+def compute_wake_tm_tq_td(
+    wcc: np.ndarray,
+    wss: np.ndarray,
+    y0: float = 0.0,
+    y: float = 0.0,
+    n_modes_cc: int | None = None,
+    n_modes_ss: int | None = None,
+) -> dict:
+    """Compute transverse monopole (Tm), quadrupole (Tq) and dipole (Td) wakes.
+
+    Replicates ``PostProcessor2D/Wakes/Flat/PP_WakeL_Tm_Tq_Td.m`` exactly.
+    For a beam (source) offset *y0* and a witness offset *y* (both in
+    metres), the Wcc (cos-cos) and Wss (sin-sin) coupling matrices are
+    combined into three physical transverse wakes plus the longitudinal
+    (monopole) wake::
+
+        Wlong(s) = (2/D)·10⁻³ · Σₖ [Wcc·cosh(k·y)·cosh(k·y₀)
+                                    + Wss·sinh(k·y)·sinh(k·y₀)]
+
+        Tm(s)    = −(2/D)·10⁻³ · IntegrTr(hₛ, Σₖ k·[Wcc·sinh(k·y)·cosh(k·y₀)
+                                                 + Wss·cosh(k·y)·sinh(k·y₀)])
+
+        Tq(s)    = −(2/D)·10⁻⁶ · IntegrTr(hₛ, Σₖ k²·[Wcc·cosh(k·y)·cosh(k·y₀)
+                                                  + Wss·sinh(k·y)·sinh(k·y₀)])
+
+        Td(s)    = −(2/D)·10⁻⁶ · IntegrTr(hₛ, Σₖ k²·[Wcc·sinh(k·y)·sinh(k·y₀)
+                                                  + Wss·cosh(k·y)·cosh(k·y₀)])
+
+    The names follow the MATLAB output file ``WakeLQD.txt``: ``Tm`` is the
+    transverse wake labelled ``Wm`` there, ``Tq`` the quadrupole wake
+    ``Wquad`` and ``Td`` the dipole wake ``Wdipole``.  On axis
+    (``y = y0 = 0``) ``Tm`` vanishes while ``Tq``/``Td`` reduce to the
+    on-axis quadrupole / dipole wakes of :func:`compute_wake_long_quad` /
+    :func:`compute_wake_long_quad_dipole`.
+
+    Parameters
+    ----------
+    wcc : np.ndarray
+        Wcc matrix from :func:`assemble_wcc`.
+    wss : np.ndarray
+        Wss matrix from :func:`assemble_wss`.
+    y0 : float, optional
+        Source transverse offset [m].  Default 0 (on axis).
+    y : float, optional
+        Witness transverse offset [m].  Default 0 (on axis).
+    n_modes_cc : int, optional
+        Number of cos-cos modes to use.  Defaults to all available.
+    n_modes_ss : int, optional
+        Number of sin-sin modes to use.  Defaults to all available.
+
+    Returns
+    -------
+    dict
+        Keys:
+        - ``s``: np.ndarray — longitudinal coordinate [m]
+        - ``D``: float — structure width [m]
+        - ``y0``, ``y``: float — the offsets used
+        - ``Wlong``: np.ndarray — longitudinal (monopole) wake [V/pC]
+        - ``Tm``: np.ndarray — transverse wake [V/pC]  (MATLAB ``Wm``)
+        - ``Tq``: np.ndarray — quadrupole wake [V/pC/mm] (MATLAB ``Wquad``)
+        - ``Td``: np.ndarray — dipole wake [V/pC/mm] (MATLAB ``Wdipole``)
+        - ``Wm``, ``Wquad``, ``Wdipole``: aliases of Tm/Tq/Td (MATLAB names)
+        - ``Fm``, ``FQ``, ``FD``: np.ndarray (n_modes, ns) — modal terms
+        - ``k_cc``, ``k_ss``: np.ndarray — wavenumbers used [rad/m]
+        - ``error_long``, ``error_m``, ``error_quad``, ``error_dipole``:
+          float — truncation-error estimates in percent (MATLAB ``error_*``)
+
+    Raises
+    ------
+    ValueError
+        If Wcc/Wss s-grids differ or fewer than one usable mode is present.
+    """
+    _check_matching_s(wcc, wss)
+
     D = wcc[0, 0]
     s = wcc[0, 1:].copy()
     ns = len(s)
@@ -499,48 +775,81 @@ def compute_wake_off_axis(
     else:
         n_modes_ss = min(n_modes_ss, Nm_ss_avail)
 
-    Wz = np.zeros(ns, dtype=np.float64)
-    Wy_sum = np.zeros(ns, dtype=np.float64)
-
     # Use the smaller of the two mode counts, as both matrices are summed jointly
     n_modes = min(n_modes_cc, n_modes_ss)
+    if n_modes <= 0:
+        raise ValueError("At least one usable mode is required in Wcc and Wss.")
+
+    WL: np.ndarray = np.zeros(ns, dtype=np.float64)
+    Wm_sum: np.ndarray = np.zeros(ns, dtype=np.float64)
+    WQ_sum: np.ndarray = np.zeros(ns, dtype=np.float64)
+    WD_sum: np.ndarray = np.zeros(ns, dtype=np.float64)
+    Fm: np.ndarray = np.zeros((n_modes, ns), dtype=np.float64)
+    FQ: np.ndarray = np.zeros((n_modes, ns), dtype=np.float64)
+    FD: np.ndarray = np.zeros((n_modes, ns), dtype=np.float64)
 
     for i in range(n_modes):
-        k = wcc[i + 1, 0]  # wavenumber [rad/m]
+        M = wcc[i + 1, 0]            # wavenumber [rad/m]
 
-        wcc_i = wcc[i + 1, 1:]   # Wcc(k, s)  for all s
-        wss_i = wss[i + 1, 1:]   # Wss(k, s)  for all s
+        wcc_i = wcc[i + 1, 1:]       # Wcc(k, s)  for all s
+        wss_i = wss[i + 1, 1:]       # Wss(k, s)  for all s
 
-        chy = np.cosh(k * y)
-        shy = np.sinh(k * y)
-        chy0 = np.cosh(k * y0)
-        shy0 = np.sinh(k * y0)
+        chy = float(np.cosh(M * y))
+        shy = float(np.sinh(M * y))
+        chy0 = float(np.cosh(M * y0))
+        shy0 = float(np.sinh(M * y0))
 
         # MATLAB:
-        #   Fz = Wcc.*cosh(M*y)*cosh(M*y0) + Wss.*sinh(M*y)*sinh(M*y0)
-        #   Fy = M*Wcc.*sinh(M*y)*cosh(M*y0) + M*Wss.*cosh(M*y)*sinh(M*y0)
-        Fz = wcc_i * chy * chy0 + wss_i * shy * shy0
-        Fy = k * (wcc_i * shy * chy0 + wss_i * chy * shy0)
+        #   dW  = Wcc.*cosh(M*y).*cosh(M*y0) + Wss.*sinh(M*y).*sinh(M*y0)
+        #   ddy = Wcc.*sinh(M*y).*cosh(M*y0) + Wss.*cosh(M*y).*sinh(M*y0)
+        dW = wcc_i * chy * chy0 + wss_i * shy * shy0
+        ddy = wcc_i * shy * chy0 + wss_i * chy * shy0
 
-        Wz += Fz
-        Wy_sum += Fy
+        WL += dW
 
-    # Integrate Wy: Wy = -IntegrTr(h, Wy_sum)
-    Wy_int = integr_tr(hs, Wy_sum)
-    Wy = -Wy_int
+        Fm[i, :] = M * ddy
+        Wm_sum += Fm[i, :]
 
-    # Scale: Wz *= 2/D * 1e-3;  Wy *= 2/D * 1e-3
-    scale = 2.0 / D * 1e-3
-    Wz *= scale
-    Wy *= scale
+        FQ[i, :] = M * M * dW
+        WQ_sum += FQ[i, :]
+
+        # MATLAB: FD = M²·(Wcc·sinh(M·y)·sinh(M·y0) + Wss·cosh(M·y)·cosh(M·y0))
+        FD[i, :] = M * M * (wcc_i * shy * shy0 + wss_i * chy * chy0)
+        WD_sum += FD[i, :]
+
+    # Integrate transverse / quadrupole / dipole modal sums, then scale.
+    Wm = -integr_tr(hs, Wm_sum) * (2.0 / D) * 1e-3   # V/pC
+    WQ = -integr_tr(hs, WQ_sum) * (2.0 / D) * 1e-6   # V/pC/mm
+    WD = -integr_tr(hs, WD_sum) * (2.0 / D) * 1e-6   # V/pC/mm
+    Wlong = WL * (2.0 / D) * 1e-3                     # V/pC
+
+    # Truncation-error estimates (percent) as in the MATLAB script.
+    error_long = _truncation_error(n_modes, wcc[n_modes, 1:], wcc[1:, 1:])
+    error_m = _truncation_error(n_modes, Fm[n_modes - 1, :], Fm)
+    error_quad = _truncation_error(n_modes, FQ[n_modes - 1, :], FQ)
+    error_dipole = _truncation_error(n_modes, FD[n_modes - 1, :], FD)
 
     return {
         "s": s,
-        "Wz": Wz,
-        "Wy": Wy,
         "D": D,
+        "y0": y0,
+        "y": y,
+        "Wlong": Wlong,
+        "Tm": Wm,
+        "Tq": WQ,
+        "Td": WD,
+        "Wm": Wm,          # MATLAB output-column name
+        "Wquad": WQ,       # MATLAB output-column name
+        "Wdipole": WD,     # MATLAB output-column name
+        "Fm": Fm,
+        "FQ": FQ,
+        "FD": FD,
         "k_cc": wcc[1:n_modes + 1, 0].copy(),
         "k_ss": wss[1:n_modes + 1, 0].copy(),
+        "error_long": error_long,
+        "error_m": error_m,
+        "error_quad": error_quad,
+        "error_dipole": error_dipole,
     }
 
 

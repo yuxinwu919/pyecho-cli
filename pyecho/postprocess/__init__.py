@@ -20,15 +20,7 @@ Basic usage::
     >>> print(result.loss_factor)
 """
 
-from pyecho.postprocess.wakes import (
-    process_wake_monopole,
-    process_wake_dipole,
-    assemble_wcc,
-    assemble_wss,
-    compute_wake_long_quad,
-    compute_wake_long_quad_dipole,
-    process_flat_wake,
-)
+from pyecho.postprocess.core import PostProcessor
 from pyecho.postprocess.fields import (
     extract_field_at_point,
     process_field_monitor,
@@ -36,12 +28,25 @@ from pyecho.postprocess.fields import (
     synthesize_total_field_from_loader,
 )
 from pyecho.postprocess.particles import (
-    load_echo_particles,
     compute_beam_moments,
-    convert_echo_to_astra,
     compute_particle_statistics,
+    convert_echo_to_astra,
+    load_echo_particles,
+    load_field_bin,
+    see_field,
 )
-from pyecho.postprocess.core import PostProcessor
+from pyecho.postprocess.wakes import (
+    assemble_wcc,
+    assemble_wss,
+    compute_wake_long_quad,
+    compute_wake_long_quad_dipole,
+    compute_wake_off_axis,
+    compute_wake_tm_tq_td,
+    compute_wake_zy,
+    process_flat_wake,
+    process_wake_dipole,
+    process_wake_monopole,
+)
 
 __all__ = [
     # Core
@@ -54,6 +59,9 @@ __all__ = [
     "assemble_wss",
     "compute_wake_long_quad",
     "compute_wake_long_quad_dipole",
+    "compute_wake_zy",
+    "compute_wake_off_axis",
+    "compute_wake_tm_tq_td",
     "process_flat_wake",
     # Fields
     "extract_field_at_point",
@@ -65,4 +73,6 @@ __all__ = [
     "compute_beam_moments",
     "convert_echo_to_astra",
     "compute_particle_statistics",
+    "load_field_bin",
+    "see_field",
 ]

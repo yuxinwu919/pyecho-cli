@@ -4,6 +4,8 @@ Replicates ECHO2D's particle analysis MATLAB scripts:
 * ``AnalyseParticles.m`` — load and analyse particle phase-space data
 * ``SeeBeamMoments.m`` — compute beam moments from BeamMomentsMonitor.txt
 * ``ECHO_2_ASTRA.m`` — convert ECHO particle format to ASTRA format
+* ``A_SeeField.m`` — extract a field snapshot along the beam trajectory
+  (:func:`load_field_bin` / :func:`see_field`)
 
 ECHO2D can output particle phase-space data in a binary format
 (``particles.out``) for tracking studies.  This module provides
@@ -440,3 +442,213 @@ def compute_particle_statistics(
         "emit_y": _emit(y, py),
         "emit_z": _emit(z, pz),
     }
+
+
+# ---------------------------------------------------------------------------
+# Field snapshot along the beam trajectory (A_SeeField.m)
+# ---------------------------------------------------------------------------
+
+
+def load_field_bin(filepath: str | Path) -> dict[str, Any]:
+    """Load an ECHO2D raw field snapshot ``Field_XX.bin``.
+
+    Replicates the binary reading logic in ``A_SeeField.m``.
+
+    Binary layout (little-endian, column-major):
+        * 2 × C ``long`` ints: ``nx`` (longitudinal grid points),
+          ``ny`` (transverse grid points)
+        * 6 × ``ny·nx`` doubles in the order Ex, Ey, Ez, Hx, Hy, Hz, each
+          component stored as an ``ny × nx`` grid (row = transverse index,
+          column = longitudinal index, matching MATLAB's
+          ``fread(fid, [ny, nx])``).
+
+    The C ``long`` header is 8 bytes on 64-bit platforms (Linux/macOS) and
+    4 bytes on Windows; both are tried so the file loads regardless of where
+    it was produced.
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Path to the ``Field_XX.bin`` file.
+
+    Returns
+    -------
+    dict
+        Keys: ``nx``, ``ny`` (int), and ``Ex``, ``Ey``, ``Ez``, ``Hx``,
+        ``Hy``, ``Hz`` (np.ndarray of shape ``(ny, nx)``).
+
+    Raises
+    ------
+    PostProcessError
+        If the file is missing, too short, or its declared grid does not
+        match the file size.
+    """
+    filepath = Path(filepath)
+    try:
+        raw = filepath.read_bytes()
+    except OSError as exc:
+        raise PostProcessError(f"Cannot read {filepath}: {exc}") from exc
+
+    # Try a 64-bit 'long' header first, then a 32-bit one.
+    header_bytes = None
+    for dt, hb in (("<qq", 16), ("<ii", 8)):
+        if len(raw) < hb:
+            continue
+        nx, ny = struct.unpack_from(dt, raw, 0)
+        nx, ny = int(nx), int(ny)
+        if nx <= 0 or ny <= 0:
+            continue
+        comp_bytes = ny * nx * 8
+        if len(raw) >= hb + 6 * comp_bytes:
+            header_bytes = hb
+            break
+
+    if header_bytes is None:
+        raise PostProcessError(
+            f"{filepath}: cannot determine the (2×C long) grid header from "
+            f"{len(raw)} bytes."
+        )
+
+    result: dict[str, Any] = {"nx": nx, "ny": ny}
+    offset = header_bytes
+    for name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+        comp = np.frombuffer(raw, dtype="<f8", count=ny * nx, offset=offset)
+        offset += ny * nx * 8
+        # MATLAB fread(fid, [ny nx]) fills column-major → order='F' reshape,
+        # so result[row, col] = value at (transverse=row, longitudinal=col).
+        result[name] = comp.reshape((ny, nx), order="F")
+
+    return result
+
+
+def see_field(
+    field_file: str | Path,
+    field_file_2: str | Path | None = None,
+    component: str = "Ex",
+    betaz: float = 0.997084677679532,
+    transverse_index: int = 10,
+) -> dict[str, Any]:
+    """Extract field data along the beam trajectory from field snapshots.
+
+    Replicates ``A_SeeField.m``.  That script loads two ``Field_XX.bin``
+    snapshots (an injected field and the field after one pass), plots the
+    component maps, and compares the field along the longitudinal line at a
+    fixed transverse index ``i`` — the beam trajectory.  Because the
+    ultra-relativistic beam moves by ``i0 = round((1 - betaz)·1000)`` grid
+    cells between the snapshots, the first snapshot's line is shifted by
+    ``i0`` before being overlaid with the second, aligning both to the
+    co-moving beam frame.
+
+    This function returns all the numeric data the MATLAB script plots
+    (it does not import matplotlib; the caller may render them):
+        * ``F1`` / ``F2``            — ``(ny, nx)`` component maps
+          (MATLAB ``mesh(F1)`` / ``mesh(F2)``)
+        * ``slice_1`` / ``slice_2``  — trajectory-line values
+          (MATLAB ``plot(Z+i0, F1(i,:), Z, F2(i,:))``)
+        * ``difference``             — ``F1 - F2`` (MATLAB ``mesh(F1-F2)``)
+
+    Parameters
+    ----------
+    field_file : str or Path
+        First (reference) ``Field_XX.bin`` snapshot.
+    field_file_2 : str or Path, optional
+        Second snapshot for comparison.  If ``None``, only the first
+        snapshot is analysed.
+    component : str, optional
+        Field component to analyse: one of ``Ex``, ``Ey``, ``Ez``, ``Hx``,
+        ``Hy``, ``Hz`` (case-insensitive).  Default ``"Ex"`` (as in the
+        MATLAB script).
+    betaz : float, optional
+        Beam relativistic beta used for the frame shift
+        ``i0 = round((1 - betaz)·1000)``.  Default matches the MATLAB value.
+    transverse_index : int, optional
+        1-indexed transverse row of the trajectory line (MATLAB ``i``).
+        Clamped to the grid bounds.  Default 10.
+
+    Returns
+    -------
+    dict
+        Keys:
+        - ``nx``, ``ny``: int — grid dimensions of the first snapshot
+        - ``betaz``: float, ``i0``: int — frame shift in grid cells
+        - ``component``: str — resolved component name (upper case)
+        - ``trajectory_row``: int — 1-indexed row actually used
+        - ``z_index``: np.ndarray (nx,) — ``[1 .. nx]`` (MATLAB ``Z``)
+        - ``F1``: np.ndarray (ny, nx) — component map of the first snapshot
+        - ``slice_1``: np.ndarray (nx,) — ``F1[row, :]``
+        - ``slice_z_1``: np.ndarray (nx,) — ``z_index + i0`` (shifted)
+        - ``field``: dict — full parsed first snapshot (all components)
+        - If *field_file_2* is given, additionally: ``F2`` (ny2, nx2),
+          ``slice_2`` (nx2,), ``slice_z_2`` (= ``z_index``, unshifted), and
+          ``difference`` (``F1 - F2`` when the grids match, else ``None``).
+
+    Raises
+    ------
+    PostProcessError
+        If a file cannot be read, the component is unknown, or the two
+        snapshots have incompatible longitudinal grids.
+    """
+    comp_upper = component.upper()
+    _COMPONENTS = ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz")
+    comp = next((c for c in _COMPONENTS if c.upper() == comp_upper), None)
+    if comp is None:
+        raise PostProcessError(
+            f"Unknown field component {component!r}; expected one of "
+            "Ex, Ey, Ez, Hx, Hy, Hz."
+        )
+
+    field = load_field_bin(field_file)
+    nx, ny = field["nx"], field["ny"]
+    F1 = field[comp]
+
+    i0 = int(round((1.0 - betaz) * 1000.0))
+
+    row = int(transverse_index) - 1        # MATLAB 1-indexed → Python
+    row = max(0, min(row, ny - 1))         # clamp to grid bounds
+    trajectory_row = row + 1
+    if trajectory_row != int(transverse_index):
+        logger.warning(
+            "see_field: transverse_index %d out of range [1, %d]; using %d.",
+            int(transverse_index), ny, trajectory_row,
+        )
+
+    Z = np.arange(1, nx + 1, dtype=np.float64)  # MATLAB Z = [1:nx1]
+
+    result: dict[str, Any] = {
+        "nx": nx,
+        "ny": ny,
+        "betaz": betaz,
+        "i0": i0,
+        "component": comp,
+        "trajectory_row": trajectory_row,
+        "z_index": Z,
+        "F1": F1,
+        "slice_1": F1[row, :],
+        "slice_z_1": Z + i0,
+        "field": field,
+    }
+
+    if field_file_2 is not None:
+        field2 = load_field_bin(field_file_2)
+        F2 = field2[comp]
+        nx2, ny2 = field2["nx"], field2["ny"]
+        if nx2 != nx:
+            raise PostProcessError(
+                f"see_field: snapshots have different longitudinal grids "
+                f"(nx={nx} vs {nx2}); cannot align trajectory lines."
+            )
+        row2 = max(0, min(row, ny2 - 1))
+        result["F2"] = F2
+        result["slice_2"] = F2[row2, :]
+        result["slice_z_2"] = Z  # unshifted — MATLAB plot(Z, F2(i,:))
+        if F2.shape == F1.shape:
+            result["difference"] = F1 - F2
+        else:
+            logger.warning(
+                "see_field: snapshot grids differ (%s vs %s); "
+                "difference map omitted.",
+                F1.shape, F2.shape,
+            )
+            result["difference"] = None
+
+    return result
