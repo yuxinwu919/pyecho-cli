@@ -12,6 +12,8 @@ escape codes and panel borders in the output.
 
 from __future__ import annotations
 
+import re
+
 import typer
 from typer.testing import CliRunner
 
@@ -96,15 +98,64 @@ def test_project_help() -> None:
 
 def test_run_help() -> None:
     """``echo2d run --help`` lists simulation commands."""
-    _help_contains("run", ("new", "start", "list", "single", "batch"))
+    _help_contains("run", ("new", "start", "list", "single", "batch", "sweep"))
+
+
+def test_run_sweep_help() -> None:
+    """``echo2d run sweep --help`` lists every sweep option."""
+    result = runner.invoke(app, ["run", "sweep", "--help"])
+    assert result.exit_code == 0, result.exception
+    # Strip Rich ANSI colour codes — option names are split by escape
+    # sequences (``-\x1b[1;36m-param``), so a raw substring match on
+    # ``--param`` would be too brittle.
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    for token in (
+        "--param", "--values", "--from-run",
+        "--geo-param", "--geo-values",
+        "--threads", "--dry-run",
+    ):
+        assert token in clean, (
+            f"expected {token!r} in `echo2d run sweep --help` output:\n"
+            f"{result.output}"
+        )
 
 
 def test_postprocess_help() -> None:
     """``echo2d postprocess --help`` lists post-processing commands."""
     _help_contains(
         "postprocess",
-        ("wake", "impedance", "field", "particles", "report"),
+        ("wake", "impedance", "field", "particles", "report", "summary"),
     )
+
+
+def test_postprocess_summary_help() -> None:
+    """``echo2d postprocess summary --help`` renders and lists options."""
+    result = runner.invoke(app, ["postprocess", "summary", "--help"])
+    assert result.exit_code == 0, result.exception
+    # Strip Rich ANSI colour codes — option names may be split by escape
+    # sequences, so a raw substring match is too brittle.
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    for token in (
+        "RUNS...",
+        "Generate a summary table across multiple runs",
+        "--project",
+        "--sort",
+        "Sort by: name, loss, kick",
+    ):
+        assert token in clean, (
+            f"expected {token!r} in `echo2d postprocess summary --help` output:\n"
+            f"{result.output}"
+        )
+
+
+def test_postprocess_summary_no_matches_exits_cleanly() -> None:
+    """``echo2d postprocess summary <missing>`` errors cleanly (exit 1)."""
+    result = runner.invoke(
+        app,
+        ["postprocess", "summary", "no_such_run_xyz", "--project", "/nonexistent"],
+    )
+    assert result.exit_code == 1
+    assert "No run directories found" in result.output
 
 
 def test_geometry_help() -> None:

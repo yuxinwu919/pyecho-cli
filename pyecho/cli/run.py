@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Annotated, Optional
@@ -695,6 +696,408 @@ def run_converge(
         console.print("\n[green]✓ Converged (<5% between finest two meshes)[/green]")
     else:
         console.print("\n[yellow]⚠ Not converged — consider finer meshes[/yellow]")
+
+
+# ---------------------------------------------------------------------------
+# Sweep helpers
+# ---------------------------------------------------------------------------
+
+def _parse_sweep_values(values: str) -> list[str]:
+    """Parse a sweep ``--values`` string into a list of value strings.
+
+    Two forms are supported:
+
+    - Literal list:  ``"v1,v2,v3"`` → ``["v1", "v2", "v3"]``
+    - Range:         ``"start,stop,step"`` → an arithmetic progression
+      (``start``, ``start+step``, …, ``stop``), rendered with ``%.10g``.
+
+    A three-element string whose parts are all numeric is interpreted as
+    a range; anything else is treated as a literal list.
+    """
+    parts = [p.strip() for p in values.split(",") if p.strip()]
+    if len(parts) == 3:
+        try:
+            start, stop, step = (float(p) for p in parts)
+        except ValueError:
+            return parts
+        if step == 0:
+            return parts
+        result: list[str] = []
+        v = start
+        eps = abs(step) * 1e-12
+        if step > 0:
+            while v <= stop + eps:
+                result.append(f"{v:.10g}")
+                v += step
+        else:
+            while v >= stop - eps:
+                result.append(f"{v:.10g}")
+                v += step
+        return result
+    return parts
+
+
+def _set_input_param(input_file: Path, param: str, value: str) -> None:
+    """Set *param* to *value* in an ``input_in.txt`` file (regex edit).
+
+    Only the value token up to the first tab/percent/whitespace after the
+    ``=`` is replaced, so trailing comments are preserved.
+    """
+    text = input_file.read_text(encoding="utf-8")
+    updated = re.sub(
+        rf"^{re.escape(param)}\s*=\s*[^\t%s]+",
+        f"{param}={value}",
+        text,
+        flags=re.MULTILINE,
+    )
+    if updated == text:
+        raise ValueError(f"Parameter '{param}' not found in {input_file}")
+    input_file.write_text(updated, encoding="utf-8")
+
+
+def _geometry_file_in_run(run_dir: Path) -> Path:
+    """Return the geometry file path referenced by *run_dir*/input_in.txt."""
+    text = (run_dir / "input_in.txt").read_text(encoding="utf-8")
+    m = re.search(r"^GeometryFile\s*=\s*([^\t%s]+)", text, re.MULTILINE)
+    if m and m.group(1) != "-":
+        return run_dir / m.group(1)
+    for f in sorted(run_dir.glob("*.txt")):
+        if f.name != "input_in.txt":
+            return f
+    raise FileNotFoundError(f"No geometry file found in {run_dir}")
+
+
+def _sweep_geometry_radial(geom_file: Path, param: str, value: float) -> None:
+    """Rewrite *geom_file* with a new radial geometry parameter.
+
+    ECHO2D geometry files describe boundary segments as ten
+    whitespace-separated fields, ``z1 r1 z2 r2 …``, where the radial
+    coordinates are fields 2 and 4.  Only those coordinates are edited;
+    longitudinal positions are left untouched.
+
+    The parameter name selects how the new value is applied:
+
+    - ``radius`` — proportional resize: all radial coordinates are scaled
+      so the maximum maps to *value* (e.g. a round pipe).
+    - ``half_gap`` / ``width`` / ``gap`` — gap shift: all radial
+      coordinates are shifted so the minimum maps to *value*, preserving
+      offsets such as a DLW's dielectric thickness.
+    """
+    lines = geom_file.read_text(encoding="utf-8").splitlines()
+    radial: list[tuple[int, int, float]] = []
+    for li, line in enumerate(lines):
+        fields = line.split()
+        if len(fields) != 10:
+            continue
+        for ci in (1, 3):
+            try:
+                radial.append((li, ci, float(fields[ci])))
+            except ValueError:
+                pass
+    if not radial:
+        return
+
+    old_min = min(v for _, _, v in radial)
+    old_max = max(v for _, _, v in radial)
+
+    if param == "radius":
+        if old_max <= 0:
+            return
+        factor = value / old_max
+    else:
+        delta = value - old_min
+
+    for li, ci, old in radial:
+        new_v = old * factor if param == "radius" else old + delta
+        tokens = re.split(r"(\s+)", lines[li])
+        # tokens alternate field, separator, field, …, trailing "".
+        # Field index k lives at tokens[2k] when there is no leading space.
+        if tokens and (tokens[0] == "" or tokens[0].isspace()):
+            continue  # unusual leading whitespace — leave this line alone
+        tokens[2 * ci] = f"{new_v:.10g}"
+        lines[li] = "".join(tokens)
+
+    geom_file.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _execute_run(run_dir: Path, threads: int = 1) -> bool:
+    """Run every sub-run of *run_dir* and update its status.
+
+    Mirrors ``echo2d run start``: for each symmetry, patch
+    ``SymmetryCondition`` into ``input_in.txt``, run the solver, collect
+    output files, and update the per-run manifest.  Returns ``True`` if
+    every sub-run completed.
+    """
+    from pyecho.project import load_run_meta, update_run_status
+    from pyecho.runner import ECHO2DRunner
+
+    meta = load_run_meta(run_dir)
+    input_file = run_dir / "input_in.txt"
+    if not input_file.is_file():
+        console.print(f"[bold red]Error:[/bold red] No input_in.txt in {run_dir}")
+        return False
+
+    original = input_file.read_text(encoding="utf-8")
+    ok = True
+    try:
+        for sr in meta.sub_runs:
+            sym = sr.symmetry
+            out_subdir = run_dir / sr.output_dir.strip("/")
+            out_subdir.mkdir(parents=True, exist_ok=True)
+
+            # Patch SymmetryCondition for this sub-run
+            patched = re.sub(
+                r"SymmetryCondition=\w+",
+                f"SymmetryCondition={sym}",
+                original,
+            )
+            input_file.write_text(patched, encoding="utf-8")
+
+            t0 = time.time()
+            try:
+                runner = ECHO2DRunner(run_dir)
+                gen = runner.run_stream(params=None, np=threads)
+                while True:
+                    try:
+                        update = next(gen)
+                        pct = min(float(update.get("percent", 0)), 100)
+                        console.print(
+                            f"    {pct:5.1f}%  {update.get('message', '')[:40]}"
+                        )
+                    except StopIteration:
+                        break
+                _collect_output(runner.work_dir, out_subdir, sym)
+                update_run_status(run_dir, sym, "completed", time.time() - t0)
+                console.print(
+                    f"    [green]✓ {sym} completed in {time.time()-t0:.1f}s[/green]"
+                )
+            except Exception as exc:
+                update_run_status(run_dir, sym, "failed", time.time() - t0)
+                console.print(f"    [red]✗ {sym} failed: {exc}[/red]")
+                ok = False
+                break
+    finally:
+        input_file.write_text(original, encoding="utf-8")
+    return ok
+
+
+@run_app.command("sweep")
+def run_sweep(
+    param: Annotated[
+        str,
+        typer.Option("--param", "-p", help="Parameter to sweep (e.g. BunchSigma, StepZ)"),
+    ],
+    values: Annotated[
+        str,
+        typer.Option("--values", "-v", help="Values: 'start,stop,step' or 'v1,v2,v3'"),
+    ],
+    template_run: Annotated[
+        str,
+        typer.Option("--from-run", "-f", help="Base run to copy config from"),
+    ],
+    project: Annotated[
+        Optional[str],
+        typer.Option("--project", "-P", help="Project name"),
+    ] = None,
+    geometry_param: Annotated[
+        Optional[str],
+        typer.Option(
+            "--geo-param", "-g",
+            help="Geometry parameter to sweep (half_gap, radius, width, etc.)",
+        ),
+    ] = None,
+    geometry_values: Annotated[
+        Optional[str],
+        typer.Option("--geo-values", help="Geometry values for sweep"),
+    ] = None,
+    threads: Annotated[
+        int,
+        typer.Option("--threads", "-j", help="OpenMP threads"),
+    ] = 1,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would run without executing"),
+    ] = False,
+) -> None:
+    """Run a parameter sweep — vary one parameter over multiple values.
+
+    Creates a new run per value, copies the configuration from
+    ``--from-run``, edits ``input_in.txt`` in place, and (optionally)
+    regenerates the geometry before submitting each simulation.
+
+    \\b
+    Values syntax:
+      - Literal list:  -v "0.5,1.0,1.5,2.0"
+      - Range:         -v "0.0001,0.0005,0.0001"  (start, stop, step)
+
+    \\b
+    Examples:
+      echo2d run sweep -p BunchSigma -v "0.5,1.0,1.5,2.0" -f 001 -j 4
+      echo2d run sweep -p StepZ -v "0.0001,0.0005,0.0001" -f 001
+      echo2d run sweep -p BunchSigma -v "0.5,2.0,0.5" -g half_gap --geo-values "0.0005,0.0020,0.0005" -f 001
+    """
+    from pyecho.project import (
+        _get_workspace_root,
+        create_new_run,
+        find_project_root,
+    )
+
+    # ── Resolve project ──────────────────────────────────────────────
+    proj_dir: Path | None = None
+    if project:
+        proj_dir = _get_workspace_root() / project
+        if not proj_dir.is_dir():
+            console.print(f"[bold red]Error:[/bold red] Project '{project}' not found.")
+            raise typer.Exit(1)
+    else:
+        proj_dir = find_project_root()
+        if proj_dir is None:
+            console.print(
+                "[bold red]Error:[/bold red] Not inside an ECHO2D project. "
+                "Use --project to specify one."
+            )
+            raise typer.Exit(1)
+
+    runs_dir = proj_dir / "runs"
+    source_dir: Path | None = None
+    for child in runs_dir.iterdir():
+        if child.is_dir() and child.name.startswith(template_run):
+            source_dir = child
+            break
+    if source_dir is None:
+        console.print(
+            f"[bold red]Error:[/bold red] Run '{template_run}' not found in {proj_dir}."
+        )
+        raise typer.Exit(1)
+
+    # ── Parse sweep values ───────────────────────────────────────────
+    main_values = _parse_sweep_values(values)
+    if not main_values:
+        console.print(
+            "[bold red]Error:[/bold red] No sweep values parsed from --values."
+        )
+        raise typer.Exit(1)
+
+    geo_values: list[str] | None = None
+    if bool(geometry_param) != bool(geometry_values):
+        console.print(
+            "[bold red]Error:[/bold red] Use --geo-param and --geo-values together."
+        )
+        raise typer.Exit(1)
+    if geometry_param and geometry_values:
+        geo_values = _parse_sweep_values(geometry_values)
+        if len(geo_values) != len(main_values):
+            console.print(
+                "[bold red]Error:[/bold red] --geo-values must provide the same "
+                f"number of values as --values ({len(main_values)})."
+            )
+            raise typer.Exit(1)
+
+    # ── Plan preview ─────────────────────────────────────────────────
+    geo_line = ""
+    if geo_values and geometry_param:
+        geo_line = f"  Geometry:  [cyan]{geometry_param}[/cyan] → {', '.join(geo_values)}\n"
+    mode_line = "  Mode:      [yellow]dry-run (planned only)[/yellow]" if dry_run else ""
+    console.print(
+        Panel.fit(
+            f"[bold]Parameter sweep[/bold]\n"
+            f"  Project:   [cyan]{proj_dir.name}[/cyan]\n"
+            f"  Param:     [cyan]{param}[/cyan] → {', '.join(main_values)}\n"
+            f"{geo_line}"
+            f"  From run:  [cyan]{source_dir.name}[/cyan]\n"
+            f"  Threads:   {threads}\n"
+            f"{mode_line}",
+            title="Sweep",
+        )
+    )
+
+    # ── Build and (optionally) run each point ────────────────────────
+    created: list[dict[str, str]] = []
+    any_failed = False
+    for i, val in enumerate(main_values):
+        run = create_new_run(
+            proj_dir,
+            name=f"sweep_{param}_{val}",
+            from_run=template_run,
+        )
+        run_dir = proj_dir / "runs" / run.dir_name
+        input_file = run_dir / "input_in.txt"
+        if not input_file.is_file():
+            console.print(f"[bold red]Error:[/bold red] No input_in.txt in {run_dir}")
+            any_failed = True
+            break
+
+        # 1. Update the swept parameter in input_in.txt (regex edit)
+        try:
+            _set_input_param(input_file, param, val)
+        except ValueError as exc:
+            console.print(f"[bold red]Error:[/bold red] {exc}")
+            any_failed = True
+            break
+
+        # 2. Regenerate geometry for this value (in place)
+        geo_val = ""
+        if geo_values is not None and geometry_param:
+            try:
+                geom_file = _geometry_file_in_run(run_dir)
+                _sweep_geometry_radial(geom_file, geometry_param, float(geo_values[i]))
+                geo_val = geo_values[i]
+            except Exception as exc:
+                console.print(
+                    f"[bold red]Error:[/bold red] Geometry sweep failed "
+                    f"for {run.dir_name}: {exc}"
+                )
+                any_failed = True
+                break
+
+        if dry_run:
+            console.print(
+                f"  [dim]• planned[/dim] [cyan]{run.dir_name}[/cyan]  "
+                f"{param}={val}"
+                + (f"  {geometry_param}={geo_val}" if geo_val else "")
+            )
+            created.append(
+                {"run": run.dir_name, "value": val, "geo": geo_val, "status": "planned"}
+            )
+        else:
+            console.print(
+                f"\n  [bold]• {run.dir_name}[/bold]  {param}={val}"
+                + (f"  {geometry_param}={geo_val}" if geo_val else "")
+            )
+            ok = _execute_run(run_dir, threads)
+            created.append(
+                {
+                    "run": run.dir_name,
+                    "value": val,
+                    "geo": geo_val,
+                    "status": "completed" if ok else "failed",
+                }
+            )
+            if not ok:
+                any_failed = True
+
+    # ── Summary table ────────────────────────────────────────────────
+    table = Table(title="Sweep Summary")
+    table.add_column("Run", style="cyan")
+    table.add_column(param, style="yellow")
+    if geometry_param:
+        table.add_column(geometry_param, style="yellow")
+    table.add_column("Status")
+    for c in created:
+        icon = {
+            "completed": "[green]✓[/green]",
+            "failed": "[red]✗[/red]",
+            "planned": "[dim]○[/dim]",
+        }.get(c["status"], c["status"])
+        row = [c["run"], c["value"]]
+        if geometry_param:
+            row.append(c["geo"] or "—")
+        row.append(icon)
+        table.add_row(*row)
+    console.print(table)
+
+    if any_failed:
+        raise typer.Exit(1)
 
 
 # ===================================================================

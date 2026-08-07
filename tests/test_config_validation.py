@@ -8,9 +8,14 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from typer.testing import CliRunner
 
+from pyecho.cli import app
 from pyecho.config import ECHO2DParams, FieldMonitorConfig
 from pyecho.errors import ConfigError
+
+
+runner = CliRunner()
 
 
 class TestGeometryValidation:
@@ -269,3 +274,59 @@ class TestModeEdgeCases:
     def test_modes_negative_values_accepted(self):
         params = ECHO2DParams(Modes=[-1, 0, 2])
         assert params.Modes == [-1, 0, 2]
+
+
+class TestConfigDiff:
+    """Tests for ``echo2d config diff``."""
+
+    def test_identical_files_no_differences(self, tmp_path):
+        """Two identical files report 'No differences found'."""
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        content = "\n".join(
+            [
+                "%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%",
+                "GeometryFile=geo.txt",
+                "BunchSigma=0.001",
+                "Modes=0 1",
+                "",
+            ]
+        )
+        f1.write_text(content, encoding="utf-8")
+        f2.write_text(content, encoding="utf-8")
+
+        result = runner.invoke(app, ["config", "diff", str(f1), str(f2)])
+        assert result.exit_code == 0, result.exception
+        assert "No differences found" in result.output
+
+    def test_changed_parameter_shows_both_values(self, tmp_path):
+        """A single changed parameter shows both old and new values."""
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        f1.write_text("BunchSigma=0.001\n", encoding="utf-8")
+        f2.write_text("BunchSigma=0.002\n", encoding="utf-8")
+
+        result = runner.invoke(app, ["config", "diff", str(f1), str(f2)])
+        assert result.exit_code == 0, result.exception
+        assert "BunchSigma" in result.output
+        assert "0.001" in result.output
+        assert "0.002" in result.output
+
+    def test_param_only_in_file1_shows_as_added(self, tmp_path):
+        """A parameter present only in file1 is still shown as a row."""
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        f1.write_text("BunchSigma=0.001\nModes=0 1\n", encoding="utf-8")
+        f2.write_text("BunchSigma=0.001\n", encoding="utf-8")
+
+        result = runner.invoke(app, ["config", "diff", str(f1), str(f2)])
+        assert result.exit_code == 0, result.exception
+        assert "Modes" in result.output
+        assert "0 1" in result.output
+
+    def test_file_not_found_error(self, tmp_path):
+        """A missing file produces an error and a non-zero exit code."""
+        missing = str(tmp_path / "does_not_exist.txt")
+        result = runner.invoke(app, ["config", "diff", missing, missing])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()

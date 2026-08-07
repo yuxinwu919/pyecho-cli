@@ -8,6 +8,7 @@ from typing import Annotated, Optional
 import typer
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.table import Table
 
 from pyecho.cli import config_app, console
 from pyecho.errors import ConfigError
@@ -163,6 +164,82 @@ def config_show(
         if isinstance(val, list):
             val = " ".join(str(x) for x in val)
         table.add_row(field_name, str(val))
+
+    console.print(table)
+
+
+def _read_input_params(path: Path) -> dict[str, str]:
+    """Parse a ``key=value`` input file into a dict (simple parser).
+
+    Skips comment lines (starting with ``%``, ``#``, or ``//``) and blank
+    lines.  Whitespace around the key and value is stripped.  Later
+    duplicate keys overwrite earlier ones.
+    """
+    params: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith(("%", "#", "//")):
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key:
+            params[key] = value.strip()
+    return params
+
+
+@config_app.command("diff")
+def config_diff(
+    file1: Annotated[str, typer.Argument(help="First input file")],
+    file2: Annotated[str, typer.Argument(help="Second input file")],
+) -> None:
+    """Compare two input_in.txt files and show differences."""
+    path1 = Path(file1)
+    path2 = Path(file2)
+
+    for path, name in ((path1, file1), (path2, file2)):
+        if not path.is_file():
+            console.print(
+                f"[bold red]Error:[/bold red] File not found: [cyan]{name}[/cyan]"
+            )
+            raise typer.Exit(1)
+
+    try:
+        params1 = _read_input_params(path1)
+        params2 = _read_input_params(path2)
+    except OSError as exc:
+        console.print(f"[bold red]Error:[/bold red] Could not read file: {exc}")
+        raise typer.Exit(1)
+
+    # Build the difference rows: (key, value1, value2, status)
+    rows: list[tuple[str, str, str, str]] = []
+    for key in sorted(set(params1) | set(params2)):
+        v1 = params1.get(key)
+        v2 = params2.get(key)
+        if v1 == v2:
+            continue
+        if v1 is None:
+            rows.append((key, "—", v2, "added"))
+        elif v2 is None:
+            rows.append((key, v1, "—", "removed"))
+        else:
+            rows.append((key, v1, v2, "changed"))
+
+    if not rows:
+        console.print("[bold green]No differences found.[/bold green]")
+        return
+
+    table = Table(title="Configuration Differences")
+    table.add_column("Parameter", style="cyan")
+    table.add_column("File 1", overflow="fold")
+    table.add_column("File 2", overflow="fold")
+
+    for key, v1, v2, status in rows:
+        color = {"changed": "yellow", "added": "green", "removed": "red"}[status]
+        table.add_row(
+            f"[{color}]{key}[/{color}]",
+            f"[{color}]{v1}[/{color}]",
+            f"[{color}]{v2}[/{color}]",
+        )
 
     console.print(table)
 

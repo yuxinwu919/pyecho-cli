@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -1435,6 +1436,236 @@ def postprocess_report(
             f"or paste the path into a browser",
             title="HTML Report",
         )
+    )
+
+
+def _parse_summary_file(path: Path) -> dict[str, float | None]:
+    """Extract loss/kick factors from a processed ``summary.txt``.
+
+    Supports both the round-geometry format written by
+    :func:`postprocess_wake` (``Loss_long:``, ``Kick_dipole:``) and the
+    rectangular format written by :func:`pyecho.cli._helpers._save_wake_recta`
+    (``Longitudinal loss:``, ``Quadrupole kick:``, ``Dipole kick:``).
+
+    Returns a dict with keys ``loss_long``, ``kick_dipole`` and
+    ``kick_quad`` (each ``None`` when absent).
+    """
+    factors: dict[str, float | None] = {
+        "loss_long": None,
+        "kick_dipole": None,
+        "kick_quad": None,
+    }
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return factors
+    patterns = (
+        (r"[Ll]oss_long:\s+(-?[\d.eE+]+)", "loss_long"),
+        (r"[Ll]ongitudinal\s+loss:\s+(-?[\d.eE+]+)", "loss_long"),
+        (r"[Kk]ick_dipole:\s+(-?[\d.eE+]+)", "kick_dipole"),
+        (r"[Dd]ipole\s+kick:\s+(-?[\d.eE+]+)", "kick_dipole"),
+        (r"[Kk]ick_quad:\s+(-?[\d.eE+]+)", "kick_quad"),
+        (r"[Qq]uadrupole\s+kick:\s+(-?[\d.eE+]+)", "kick_quad"),
+    )
+    for pattern, key in patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                factors[key] = float(match.group(1))
+            except ValueError:
+                pass
+    return factors
+
+
+def _load_run_summary(run_dir: Path) -> dict[str, Any]:
+    """Best-effort collection of run metadata and processed wake factors.
+
+    Reads ``.run.yaml`` for identity/geometry/status and the processed
+    factors stored in the manifest.  Falls back to (and prefers)
+    ``processed/wake/summary.txt`` for the loss/kick factors so that runs
+    processed before the manifest update still resolve.
+    """
+    from pyecho.project import load_run_meta
+
+    info: dict[str, Any] = {
+        "path": run_dir,
+        "label": run_dir.name,
+        "id": "",
+        "geometry": "?",
+        "status": "?",
+        "loss_long": None,
+        "kick_dipole": None,
+        "kick_quad": None,
+        "processed": False,
+    }
+
+    try:
+        meta = load_run_meta(run_dir)
+    except Exception:
+        meta = None
+
+    if meta is not None:
+        info["label"] = meta.name or run_dir.name
+        info["id"] = meta.id or ""
+        info["geometry"] = meta.geometry_type or "?"
+        info["status"] = meta.status or "?"
+        processed = meta.processed
+        if processed is not None:
+            if processed.loss_long_VpC is not None:
+                info["loss_long"] = processed.loss_long_VpC
+            if processed.kick_dipole_VpCmm is not None:
+                info["kick_dipole"] = processed.kick_dipole_VpCmm
+            if processed.kick_quad_VpCmm is not None:
+                info["kick_quad"] = processed.kick_quad_VpCmm
+
+    # Prefer the processed wake summary when it exists (most authoritative).
+    summary_file = _find_processed_dir(run_dir) / "wake" / "summary.txt"
+    if summary_file.is_file():
+        factors = _parse_summary_file(summary_file)
+        for key in ("loss_long", "kick_dipole", "kick_quad"):
+            if factors[key] is not None:
+                info[key] = factors[key]
+
+    info["processed"] = any(
+        info[key] is not None for key in ("loss_long", "kick_dipole", "kick_quad")
+    )
+    return info
+
+
+@postprocess_app.command("summary")
+def postprocess_summary(
+    runs: Annotated[list[str], typer.Argument(help="Run directories or IDs (space-separated)")],
+    project: Annotated[Optional[str], typer.Option("--project", "-p", help="Project directory")] = None,
+    sort_by: Annotated[Optional[str], typer.Option("--sort", "-s", help="Sort by: name, loss, kick")] = None,
+) -> None:
+    """Generate a summary table across multiple runs.
+
+    Scans multiple run directories, loads loss/kick factors from each,
+    and displays a comparison table.
+
+    Each argument may be a run directory, a run ID (e.g. ``001``) resolved
+    through the project manifest, or a glob pattern (e.g. ``runs/*``).
+    Runs without processed wake data are shown as "Not processed".
+
+    \\b
+    Examples:
+      echo2d postprocess summary 001 002
+      echo2d postprocess summary runs/* --sort loss
+      echo2d postprocess summary . -p my_project -s kick
+    """
+    from pyecho.project import resolve_run_dir
+
+    # -- Expand each argument into concrete run directories ---------------
+    run_dirs: list[Path] = []
+    seen: set[Path] = set()
+    for ref in runs:
+        try:
+            resolved = resolve_run_dir(ref, project_dir=project)
+        except Exception:
+            resolved = None
+        if resolved is not None and resolved.is_dir():
+            if resolved not in seen:
+                seen.add(resolved)
+                run_dirs.append(resolved)
+            continue
+
+        # Treat as a glob pattern (e.g. "runs/*")
+        pattern = Path(ref).expanduser()
+        matches = sorted(pattern.parent.glob(pattern.name))
+        found = False
+        for match in matches:
+            resolved_match = match.resolve()
+            if resolved_match.is_dir() and resolved_match not in seen:
+                seen.add(resolved_match)
+                run_dirs.append(resolved_match)
+                found = True
+        if not found:
+            console.print(f"[yellow]Warning:[/yellow] No runs matched {ref!r}")
+
+    if not run_dirs:
+        console.print(
+            "[bold red]No run directories found.[/bold red] "
+            "Provide run IDs, paths, or a glob pattern like 'runs/*'."
+        )
+        raise typer.Exit(1)
+
+    # -- Load per-run data -------------------------------------------------
+    rows = [_load_run_summary(d) for d in run_dirs]
+
+    # -- Sort --------------------------------------------------------------
+    if sort_by:
+        if sort_by == "name":
+            rows.sort(key=lambda r: r["label"].lower())
+        elif sort_by in ("loss", "kick"):
+            col = "loss_long" if sort_by == "loss" else "kick_dipole"
+            rows.sort(key=lambda r: (r[col] is None, r[col] if r[col] is not None else 0.0))
+        else:
+            console.print(f"[yellow]Warning:[/yellow] Unknown sort key {sort_by!r}; "
+                          "using default order.")
+
+    # -- Best / worst per numeric column (for colour-coding) --------------
+    # Lower loss is best; stronger kicks are best.  Only colour when two or
+    # more processed values are present, so a single run is not highlighted.
+    best: dict[str, float] = {}
+    worst: dict[str, float] = {}
+    for col, prefer_min in (("loss_long", True), ("kick_dipole", False), ("kick_quad", False)):
+        values = [r[col] for r in rows if r[col] is not None]
+        if len(values) >= 2:
+            best[col] = min(values) if prefer_min else max(values)
+            worst[col] = max(values) if prefer_min else min(values)
+
+    # -- Render ------------------------------------------------------------
+    table = Table(title=f"Post-process summary — {len(rows)} run(s)")
+    table.add_column("Run", style="cyan")
+    table.add_column("Geometry", justify="center")
+    table.add_column("Loss [V/pC]", justify="right")
+    table.add_column("Kick Dipole", justify="right")
+    table.add_column("Kick Quad", justify="right")
+    table.add_column("Status", justify="center")
+
+    def _cell(col: str, value: float | None) -> str:
+        if value is None:
+            return "[dim]—[/dim]"
+        text = f"{value:.6g}"
+        if col in best and value == best[col]:
+            return f"[bold green]{text}[/bold green]"
+        if col in worst and value == worst[col]:
+            return f"[yellow]{text}[/yellow]"
+        return text
+
+    for row in rows:
+        if not row["processed"]:
+            table.add_row(
+                row["label"],
+                row["geometry"],
+                "[dim]—[/dim]",
+                "[dim]—[/dim]",
+                "[dim]—[/dim]",
+                "[yellow]Not processed[/yellow]",
+            )
+            continue
+        status = row["status"] or "completed"
+        if status == "completed":
+            status_cell = "[green]completed[/green]"
+        elif status == "running":
+            status_cell = "[cyan]running[/cyan]"
+        elif status == "failed":
+            status_cell = "[red]failed[/red]"
+        else:
+            status_cell = status
+        table.add_row(
+            row["label"],
+            row["geometry"],
+            _cell("loss_long", row["loss_long"]),
+            _cell("kick_dipole", row["kick_dipole"]),
+            _cell("kick_quad", row["kick_quad"]),
+            status_cell,
+        )
+    console.print(table)
+
+    console.print(
+        "[dim]green = best value, yellow = worst value; run "
+        "'echo2d postprocess wake <run>' to process unprocessed runs.[/dim]"
     )
 
 
