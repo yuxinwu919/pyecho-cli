@@ -141,6 +141,32 @@ def test_geometry_file_in_run_parses_input(tmp_path: Path) -> None:
 # Geometry regeneration
 # ---------------------------------------------------------------------------
 
+# A canonical two-material DLW geometry: a 1 m long dielectric-loaded
+# waveguide.  Material 0 is the conductive metal wall at y=b=10; material 1
+# is the dielectric layer (epsilon_r = 11) filling the region between the
+# half-gap y=a=5 and the outer wall y=b=10 (b = a + thickness, thickness=5).
+_DLW_GEOMETRY = (
+    "% Number of materials\n"
+    "2\n"
+    "% Number of elements in metal with conductive walls, permeability, permitivity, conductivity\n"
+    "1 1 1 0\n"
+    "% Segments of lines and elipses with conductivity\n"
+    "0\t10\t1000\t10\t0\t0\t0\t0\t1\t0\n"
+    "% Number of elements in material 1, permetivity, permeability, conductivity\n"
+    "4 11 1 0\n"
+    "% Segments of lines and elipses\n"
+    "0\t5\t0\t10\t0\t0\t0\t0\t1\t0\n"
+    "0\t10\t1000\t10\t0\t0\t0\t0\t1\t0\n"
+    "1000\t10\t1000\t5\t0\t0\t0\t0\t1\t0\n"
+    "1000\t5\t0\t5\t0\t0\t0\t0\t1\t0\n"
+)
+
+
+def _write_dlw(tmp_path: Path) -> Path:
+    g = tmp_path / "dlw.txt"
+    g.write_text(_DLW_GEOMETRY, encoding="utf-8")
+    return g
+
 
 def test_sweep_geometry_radial_half_gap_shift(tmp_path: Path) -> None:
     """half_gap sweep shifts the minimum radius, preserving offsets."""
@@ -164,6 +190,103 @@ def test_sweep_geometry_radial_radius_scale(tmp_path: Path) -> None:
     g.write_text("0\t2\t5\t2\t0\t0\t0\t0\t1\t0\n", encoding="utf-8")
     _sweep_geometry_radial(g, "radius", 4.0)
     assert g.read_text() == "0\t4\t5\t4\t0\t0\t0\t0\t1\t0"
+
+
+def _read_radial_coords(text: str) -> list[float]:
+    """All radial coordinate fields (columns 2 and 4) from segment lines."""
+    coords: list[float] = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 10:
+            try:
+                coords += [float(fields[1]), float(fields[3])]
+            except ValueError:
+                pass
+    return coords
+
+
+def test_sweep_geometry_dlw_thickness(tmp_path: Path) -> None:
+    """thickness rescales the dielectric layer: half-gap fixed, outer
+    dielectric boundary and metal wall both move to a + value."""
+    g = _write_dlw(tmp_path)
+    _sweep_geometry_radial(g, "thickness", 8.0)
+    text = g.read_text()
+
+    # Half-gap (inner dielectric boundary) stays fixed at a = 5.
+    assert "0\t5\t0\t13" in text
+    assert "1000\t13\t1000\t5" in text
+    # Outer dielectric boundary moves to b = a + 8 = 13.
+    assert "0\t13\t1000\t13" in text
+    # The conductive metal wall at y=b follows to 13.
+    assert "\n0\t13\t1000\t13\t0\t0\t0\t0\t1\t0\n" in text
+
+    coords = _read_radial_coords(text)
+    assert min(coords) == 5   # a untouched
+    assert max(coords) == 13  # b and metal wall rescaled
+
+
+def test_sweep_geometry_dlw_length(tmp_path: Path) -> None:
+    """length scales the z-coordinate fields (columns 1 and 3) only."""
+    g = _write_dlw(tmp_path)
+    _sweep_geometry_radial(g, "length", 2000.0)
+    text = g.read_text()
+
+    # Structure spanned z = 0..1000; doubling the length doubles z coords.
+    assert "0\t5\t0\t10" in text          # start z-coordinate preserved
+    assert "0\t10\t2000\t10" in text      # end z-coordinate scaled to 2000
+    assert "2000\t10\t2000\t5" in text
+    assert "2000\t5\t0\t5" in text
+    # Radial coordinates are untouched by a length sweep.
+    assert _read_radial_coords(text) == [
+        10.0, 10.0, 5.0, 10.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0,
+    ]
+
+
+def test_sweep_geometry_dlw_epsilon_r(tmp_path: Path) -> None:
+    """epsilon_r replaces the permittivity on the material-1 header line."""
+    g = _write_dlw(tmp_path)
+    _sweep_geometry_radial(g, "epsilon_r", 14.5)
+    text = g.read_text()
+
+    assert "4 14.5 1 0" in text  # N_segments eps mu sigma — eps swapped
+    assert "4 11 1 0" not in text
+    # The metal material header (also "… 1 1 0") is left untouched.
+    assert "1 1 1 0" in text
+    # No geometry coordinates were changed.
+    assert _read_radial_coords(text) == [
+        10.0, 10.0, 5.0, 10.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0,
+    ]
+
+
+def test_sweep_geometry_dlw_combined_half_gap_thickness(tmp_path: Path) -> None:
+    """half_gap then thickness sweeps compose: gap shifts, thickness rescales."""
+    g = _write_dlw(tmp_path)
+    _sweep_geometry_radial(g, "half_gap", 2.0)   # a: 5→2, b: 10→7 (thickness kept)
+    _sweep_geometry_radial(g, "thickness", 8.0)  # b: 7→2+8=10, a stays at 2
+    text = g.read_text()
+
+    assert "0\t2\t0\t10" in text            # inner boundary at new half-gap
+    assert "0\t10\t1000\t10" in text        # outer boundary at a + thickness
+    assert "1000\t2\t0\t2" in text          # inner boundary closes at half-gap
+    coords = _read_radial_coords(text)
+    assert min(coords) == 2
+    assert max(coords) == 10
+
+
+def test_sweep_geometry_dlw_thickness_rejects_single_material(
+    tmp_path: Path,
+) -> None:
+    """thickness on a single-material geometry raises a clear error."""
+    g = tmp_path / "geo.txt"
+    g.write_text(
+        "% Number of materials\n1\n% Number of elements in metal with "
+        "conductive walls, permeability, permitivity, conductivity\n"
+        "1 1 1 0\n% Segments of lines and elipses with conductivity\n"
+        "0\t2\t5\t2\t0\t0\t0\t0\t1\t0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="two materials"):
+        _sweep_geometry_radial(g, "thickness", 3.0)
 
 
 # ---------------------------------------------------------------------------

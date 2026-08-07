@@ -8,7 +8,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 from rich.panel import Panel
@@ -768,12 +768,12 @@ def _geometry_file_in_run(run_dir: Path) -> Path:
 
 
 def _sweep_geometry_radial(geom_file: Path, param: str, value: float) -> None:
-    """Rewrite *geom_file* with a new radial geometry parameter.
+    """Rewrite *geom_file* with a new geometry parameter.
 
     ECHO2D geometry files describe boundary segments as ten
     whitespace-separated fields, ``z1 r1 z2 r2 …``, where the radial
-    coordinates are fields 2 and 4.  Only those coordinates are edited;
-    longitudinal positions are left untouched.
+    coordinates are fields 2 and 4 and the longitudinal coordinates are
+    fields 1 and 3.  Only the relevant coordinates are edited.
 
     The parameter name selects how the new value is applied:
 
@@ -782,7 +782,13 @@ def _sweep_geometry_radial(geom_file: Path, param: str, value: float) -> None:
     - ``half_gap`` / ``width`` / ``gap`` — gap shift: all radial
       coordinates are shifted so the minimum maps to *value*, preserving
       offsets such as a DLW's dielectric thickness.
+    - ``thickness`` / ``length`` / ``epsilon_r`` — dielectric-loaded
+      (DLW) parameters, handled by :func:`_sweep_geometry_dlw`.
     """
+    if param in ("thickness", "length", "epsilon_r"):
+        _sweep_geometry_dlw(geom_file, param, value)
+        return
+
     lines = geom_file.read_text(encoding="utf-8").splitlines()
     radial: list[tuple[int, int, float]] = []
     for li, line in enumerate(lines):
@@ -809,15 +815,188 @@ def _sweep_geometry_radial(geom_file: Path, param: str, value: float) -> None:
 
     for li, ci, old in radial:
         new_v = old * factor if param == "radius" else old + delta
-        tokens = re.split(r"(\s+)", lines[li])
-        # tokens alternate field, separator, field, …, trailing "".
-        # Field index k lives at tokens[2k] when there is no leading space.
-        if tokens and (tokens[0] == "" or tokens[0].isspace()):
-            continue  # unusual leading whitespace — leave this line alone
-        tokens[2 * ci] = f"{new_v:.10g}"
-        lines[li] = "".join(tokens)
+        _replace_token(lines, li, ci, new_v)
 
     geom_file.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _replace_token(lines: list[str], li: int, token: int, value: float) -> None:
+    """Replace token *token* of line *li* with *value*, keeping separators.
+
+    ``re.split(r"(\\s+)", line)`` yields fields at even indices — field
+    *k* lives at ``tokens[2k]`` when the line has no leading whitespace.
+    Lines with unusual leading whitespace are left untouched.
+    """
+    tokens = re.split(r"(\s+)", lines[li])
+    if tokens and (tokens[0] == "" or tokens[0].isspace()):
+        return  # unusual leading whitespace — leave this line alone
+    tokens[2 * token] = f"{value:.10g}"
+    lines[li] = "".join(tokens)
+
+
+def _dlw_blocks(lines: list[str]) -> list[dict[str, Any]]:
+    """Split an ECHO2D geometry file into per-material blocks.
+
+    Each block describes one ``% Number of elements in material …`` group::
+
+        {"header":    line index of the ``N eps mu sigma`` header line,
+         "eps":       1,  # token index of the permittivity value
+         "segments":  [line indices of the segment lines]}
+
+    Comments and blank lines are skipped when walking the file, so the
+    returned indices are into *lines* as passed in.
+    """
+    data_li = [
+        li
+        for li, ln in enumerate(lines)
+        if ln.strip() and not ln.strip().startswith("%")
+    ]
+    if not data_li:
+        return []
+    n_materials = int(lines[data_li[0]].split()[0])
+    blocks: list[dict[str, Any]] = []
+    i = 1
+    for _ in range(n_materials):
+        header = data_li[i]
+        n_seg = int(lines[header].split()[0])
+        blocks.append({
+            "header": header,
+            "eps": 1,
+            "segments": data_li[i + 1: i + 1 + n_seg],
+        })
+        i += 1 + n_seg
+    return blocks
+
+
+def _is_dlw_geometry(
+    lines: list[str], blocks: list[dict[str, Any]] | None = None
+) -> bool:
+    """True if *lines* describe a dielectric-loaded waveguide (DLW).
+
+    A DLW is recognized either by an explicit ``dielectric`` /
+    ``material 1`` header comment or by the two-material structure where
+    the first material is the conductive wall and the second the
+    dielectric layer.
+    """
+    if "dielectric" in "\n".join(lines).lower():
+        return True
+    if blocks is None:
+        blocks = _dlw_blocks(lines)
+    return len(blocks) == 2
+
+
+def _sweep_geometry_dlw(geom_file: Path, param: str, value: float) -> None:
+    """Rewrite *geom_file* with a new dielectric-loaded (DLW) parameter.
+
+    Supported parameters:
+
+    - ``thickness`` — rescale the dielectric layer.  The dielectric region
+      runs from ``y=a`` (the half-gap, kept fixed) to ``y=b`` where
+      ``b = a + thickness``; the outer dielectric boundary *and* the
+      conductive metal wall at ``y=b`` are both moved to ``a + value``.
+    - ``length`` — rescale the longitudinal (z) coordinates of every
+      segment so the total structure length maps to *value*.
+    - ``epsilon_r`` — set the relative permittivity on the dielectric
+      (material 1) header line, e.g. ``4 {epsilon_r} 1 0``.
+
+    ``thickness`` and ``epsilon_r`` require a two-material DLW geometry;
+    ``length`` applies to any ECHO2D geometry file.
+    """
+    lines = geom_file.read_text(encoding="utf-8").splitlines()
+    blocks = _dlw_blocks(lines)
+
+    if param == "length":
+        _apply_length_sweep(lines, value)
+    elif param == "epsilon_r":
+        if not _is_dlw_geometry(lines, blocks):
+            raise ValueError(
+                "epsilon_r sweep requires a dielectric-loaded (DLW) geometry "
+                "file with two materials."
+            )
+        _replace_token(lines, blocks[1]["header"], blocks[1]["eps"], value)
+    elif param == "thickness":
+        if not _is_dlw_geometry(lines, blocks):
+            raise ValueError(
+                "thickness sweep requires a dielectric-loaded (DLW) geometry "
+                "file with two materials."
+            )
+        _apply_thickness_sweep(lines, blocks, value)
+    else:
+        raise ValueError(f"Unsupported DLW geometry parameter: {param}")
+
+    geom_file.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _apply_thickness_sweep(
+    lines: list[str], blocks: list[dict[str, Any]], value: float
+) -> None:
+    """Rescale the dielectric layer thickness, keeping the half-gap fixed.
+
+    The first material block is the conductive metal wall; the remaining
+    blocks form the dielectric layer between ``y=a`` (half-gap, fixed)
+    and ``y=b`` (outer boundary).  Both the dielectric outer boundary and
+    the metal wall are moved to ``a + value``.
+    """
+    dielectric_li = [li for blk in blocks[1:] for li in blk["segments"]]
+    radial: list[tuple[int, int, float]] = []
+    for li in dielectric_li:
+        fields = lines[li].split()
+        for ci in (1, 3):
+            try:
+                radial.append((li, ci, float(fields[ci])))
+            except ValueError:
+                pass
+    if not radial:
+        return
+    a = min(v for _, _, v in radial)
+    b = max(v for _, _, v in radial)
+    span = b - a
+    if span <= 0:
+        return
+    factor = value / span
+
+    for li, ci, old in radial:
+        _replace_token(lines, li, ci, a + (old - a) * factor)
+
+    # The conductive metal wall at y=b follows the outer dielectric boundary.
+    for blk in blocks[:1]:
+        for li in blk["segments"]:
+            fields = lines[li].split()
+            for ci in (1, 3):
+                try:
+                    old = float(fields[ci])
+                except ValueError:
+                    continue
+                _replace_token(lines, li, ci, a + (old - a) * factor)
+
+
+def _apply_length_sweep(lines: list[str], value: float) -> None:
+    """Rescale the longitudinal (z) coordinates of every segment.
+
+    Column 1 and 3 (token indices 0 and 2) hold the segment start/end
+    z-coordinates.  They are scaled about the minimum z so the structure
+    start position is preserved while the total length maps to *value*.
+    """
+    z_pts: list[tuple[int, int, float]] = []
+    for li, line in enumerate(lines):
+        fields = line.split()
+        if len(fields) != 10:
+            continue
+        for ci in (0, 2):
+            try:
+                z_pts.append((li, ci, float(fields[ci])))
+            except ValueError:
+                pass
+    if not z_pts:
+        return
+    z0 = min(v for _, _, v in z_pts)
+    z1 = max(v for _, _, v in z_pts)
+    span = z1 - z0
+    if span <= 0:
+        return
+    factor = value / span
+    for li, ci, old in z_pts:
+        _replace_token(lines, li, ci, z0 + (old - z0) * factor)
 
 
 def _execute_run(run_dir: Path, threads: int = 1) -> bool:
@@ -903,7 +1082,8 @@ def run_sweep(
         Optional[str],
         typer.Option(
             "--geo-param", "-g",
-            help="Geometry parameter to sweep (half_gap, radius, width, etc.)",
+            help="Geometry parameter to sweep (radius, half_gap, width, gap, "
+                 "thickness, length, epsilon_r)",
         ),
     ] = None,
     geometry_values: Annotated[
@@ -931,10 +1111,27 @@ def run_sweep(
       - Range:         -v "0.0001,0.0005,0.0001"  (start, stop, step)
 
     \\b
+    Geometry parameters (--geo-param):
+      Radial (any geometry):
+        radius     — proportional resize; max radius maps to the value
+        half_gap   — shift so the minimum radius maps to the value
+        width      — alias of half_gap
+        gap        — alias of half_gap
+      DLW (dielectric-loaded waveguide, 2-material geometry):
+        thickness  — rescale the dielectric layer; half-gap stays fixed,
+                     outer boundary and metal wall move to half_gap + value
+        length     — rescale the longitudinal (z) coordinates so the total
+                     structure length maps to the value
+        epsilon_r  — set the relative permittivity of the dielectric layer
+
+    \\b
     Examples:
       echo2d run sweep -p BunchSigma -v "0.5,1.0,1.5,2.0" -f 001 -j 4
       echo2d run sweep -p StepZ -v "0.0001,0.0005,0.0001" -f 001
       echo2d run sweep -p BunchSigma -v "0.5,2.0,0.5" -g half_gap --geo-values "0.0005,0.0020,0.0005" -f 001
+      echo2d run sweep -p BunchSigma -v "0.5,1.0" -g thickness --geo-values "1.0,2.0" -f 001 --dry-run
+      echo2d run sweep -p BunchSigma -v "0.5,1.0" -g length --geo-values "1000,2000" -f 001 --dry-run
+      echo2d run sweep -p BunchSigma -v "0.5,1.0" -g epsilon_r --geo-values "11,14" -f 001 --dry-run
     """
     from pyecho.project import (
         _get_workspace_root,
