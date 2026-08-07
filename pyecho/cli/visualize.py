@@ -49,7 +49,7 @@ def visualize_wake(
     backend = _get_plot_backend(ctx)
 
     if backend == "pyqtgraph":
-        from pyecho.visualize_interactive import plot_wake_interactive
+        from pyecho.visualize_pyqtgraph import plot_wake_interactive
         console.print(
             f"[green]Mode {parsed['mode']}: "
             f"hr={parsed['hr']:.2e}, D={parsed['D']:.3f}, σ={parsed['sigma']:.4f}[/green]"

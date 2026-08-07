@@ -4,7 +4,7 @@ Provides native Qt-window interactive plots for ECHO2D data.
 
 Usage::
 
-    from pyecho.visualize_interactive import plot_wake_interactive
+    from pyecho.visualize_pyqtgraph import plot_wake_interactive
 
 Requires: ``pyqtgraph`` and ``PySide2`` (or ``PyQt5``).
 Install with: ``pip install pyqtgraph PySide2``
