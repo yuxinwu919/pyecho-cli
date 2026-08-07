@@ -18,12 +18,28 @@ from typer.testing import CliRunner
 
 from pyecho.cli import app
 from pyecho.cli.run import (
+    _append_particle_params,
     _geometry_file_in_run,
     _parse_sweep_values,
     _set_input_param,
     _sweep_geometry_radial,
 )
 from pyecho.project import init_project, load_run_meta
+
+
+class _FakeRunner:
+    """Minimal ECHO2DRunner stand-in for CLI tests.
+
+    Emits one progress update, then a StopIteration carrying a fake
+    result, so ``run start``'s progress loop terminates immediately.
+    """
+
+    def __init__(self, work_dir, executable=None) -> None:
+        self.work_dir = Path(work_dir)
+
+    def run_stream(self, params=None, np=1, timeout=None):
+        yield {"percent": 100.0, "message": "done"}
+        return object()
 
 runner = CliRunner()
 
@@ -124,6 +140,92 @@ def test_set_input_param_missing_param_raises(tmp_path: Path) -> None:
     f.write_text("StepZ=0.0002\n", encoding="utf-8")
     with pytest.raises(ValueError):
         _set_input_param(f, "BunchSigma", "0.5")
+
+
+# ---------------------------------------------------------------------------
+# Particle tracking params
+# ---------------------------------------------------------------------------
+
+
+def test_append_particle_params_adds_switches(tmp_path: Path) -> None:
+    """_append_particle_params appends all four particle-tracking switches."""
+    f = tmp_path / "input_in.txt"
+    f.write_text("StepZ=0.0002\n", encoding="utf-8")
+
+    changed = _append_particle_params(f)
+
+    assert changed is True
+    text = f.read_text(encoding="utf-8")
+    for key in ("ParticleMotion", "ParticleField", "ParticleLoss", "DumpParticles"):
+        assert f"{key}=1" in text, f"missing {key}=1 in {text!r}"
+
+
+def test_append_particle_params_idempotent(tmp_path: Path) -> None:
+    """Appending twice does not duplicate the switches."""
+    f = tmp_path / "input_in.txt"
+    f.write_text("StepZ=0.0002\n", encoding="utf-8")
+
+    _append_particle_params(f)
+    text_once = f.read_text(encoding="utf-8")
+    _append_particle_params(f)
+
+    assert f.read_text(encoding="utf-8") == text_once
+
+
+def test_append_particle_params_returns_false_when_present(tmp_path: Path) -> None:
+    """If every switch already exists, nothing is appended."""
+    f = tmp_path / "input_in.txt"
+    f.write_text(
+        "ParticleMotion=1\nParticleField=1\nParticleLoss=1\nDumpParticles=1\n",
+        encoding="utf-8",
+    )
+
+    assert _append_particle_params(f) is False
+    assert f.read_text(encoding="utf-8") == (
+        "ParticleMotion=1\nParticleField=1\nParticleLoss=1\nDumpParticles=1\n"
+    )
+
+
+def test_run_start_with_particles_appends_params(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`echo2d run start --with-particles` appends the particle switches
+    to input_in.txt and completes a (fake) solver run."""
+    proj = _make_project(tmp_path)
+    monkeypatch.setenv("ECHO2D_WORKSPACE", str(tmp_path))
+    monkeypatch.chdir(proj)
+    # run.py imports ECHO2DRunner lazily inside the command, so patch the
+    # source module attribute it resolves at call time.
+    monkeypatch.setattr("pyecho.runner.ECHO2DRunner", _FakeRunner)
+
+    result = runner.invoke(app, ["run", "start", "--with-particles"])
+
+    assert result.exit_code == 0, result.exception
+    assert "Particle tracking enabled" in result.output
+
+    run_dir = proj / "runs" / "001_baseline"
+    text = (run_dir / "input_in.txt").read_text(encoding="utf-8")
+    for key in ("ParticleMotion=1", "ParticleField=1", "ParticleLoss=1", "DumpParticles=1"):
+        assert key in text, f"missing {key} in input_in.txt:\n{text}"
+
+
+def test_run_start_without_particles_leaves_input_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without --with-particles, run start does not modify particle params."""
+    proj = _make_project(tmp_path)
+    monkeypatch.setenv("ECHO2D_WORKSPACE", str(tmp_path))
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("pyecho.runner.ECHO2DRunner", _FakeRunner)
+
+    run_dir = proj / "runs" / "001_baseline"
+    before = (run_dir / "input_in.txt").read_text(encoding="utf-8")
+
+    result = runner.invoke(app, ["run", "start"])
+
+    assert result.exit_code == 0, result.exception
+    after = (run_dir / "input_in.txt").read_text(encoding="utf-8")
+    assert after == before
 
 
 def test_geometry_file_in_run_parses_input(tmp_path: Path) -> None:

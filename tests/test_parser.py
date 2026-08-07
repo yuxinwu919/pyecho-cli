@@ -17,10 +17,14 @@ import pytest
 from pyecho.errors import ParserError
 from pyecho.parser import (
     OutputLoader,
+    _load_current_file,
+    _parse_monitor_full,
     find_wake_file,
     list_wake_files,
     load_bunch_profile,
+    parse_monitor_header,
     parse_wake_file,
+    parse_wake_monitor_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -343,6 +347,15 @@ def test_load_all_wake_monitors_empty(tmp_path: Path) -> None:
     assert loader.load_all_wake_monitors() == {}
 
 
+def test_load_all_wake_monitors_skips_non_matching(tmp_path: Path) -> None:
+    """Files matching the WakeM_ glob but not the pattern are skipped."""
+    _write_wake_monitor(tmp_path / "round" / "WakeM_00_000000.bin", [1.0])
+    _write_text(tmp_path / "round" / "WakeM_foo.bin", "not a monitor\n")
+    loader = OutputLoader(tmp_path)
+    parsed = loader.load_all_wake_monitors()
+    assert set(parsed) == {(0, 0)}
+
+
 # ---------------------------------------------------------------------------
 # load_currents / load_currents_radial
 # ---------------------------------------------------------------------------
@@ -580,3 +593,533 @@ def test_load_bunch_profile_interpolated(tmp_path: Path) -> None:
     s, current = load_bunch_profile(tmp_path / "round", offset=0, s_wake=s_wake)
     np.testing.assert_allclose(s, s_wake)
     np.testing.assert_allclose(current, [5.5e9, 6.5e9])
+
+
+# ---------------------------------------------------------------------------
+# parse_wake_file error paths
+# ---------------------------------------------------------------------------
+
+def test_parse_wake_file_header_error_paths(tmp_path: Path) -> None:
+    """Each malformed wake-file header / sparse-data case raises ParserError."""
+    # Line 1 has a single token.
+    _write_text(tmp_path / "a.txt", "0.001\n0.02 0.005\n0.0 1.0\n0.001 0.9\n")
+    with pytest.raises(ParserError):
+        parse_wake_file(tmp_path / "a.txt")
+
+    # Line 2 has a single token.
+    _write_text(tmp_path / "b.txt", "0.001 3\n0.02\n0.0 1.0\n0.001 0.9\n")
+    with pytest.raises(ParserError):
+        parse_wake_file(tmp_path / "b.txt")
+
+    # Line 2's sigma is non-numeric.
+    _write_text(tmp_path / "c.txt", "0.001 3\n0.02 abc\n0.0 1.0\n0.001 0.9\n")
+    with pytest.raises(ParserError):
+        parse_wake_file(tmp_path / "c.txt")
+
+    # Enough header rows but a sparse data row yields < 2 usable s/W pairs.
+    _write_text(tmp_path / "d.txt", "0.001 3\n0.02 0.005\n0.0\n0.001 0.9\n")
+    with pytest.raises(ParserError):
+        parse_wake_file(tmp_path / "d.txt")
+
+
+# ---------------------------------------------------------------------------
+# find_wake_file / list_wake_files — non-directory inputs
+# ---------------------------------------------------------------------------
+
+def test_find_and_list_wake_files_non_dir(tmp_path: Path) -> None:
+    """Both helpers tolerate paths that are files (not directories)."""
+    f = _write_text(tmp_path / "wakeL_00.txt", _valid_wake_lines())
+    assert find_wake_file(f, 0) is None
+    assert list_wake_files(f) == []
+
+
+# ---------------------------------------------------------------------------
+# parse_wake_monitor_file error paths
+# ---------------------------------------------------------------------------
+
+def test_parse_wake_monitor_file_missing(tmp_path: Path) -> None:
+    """A non-existent WakeMonitor file raises ParserError."""
+    with pytest.raises(ParserError):
+        parse_wake_monitor_file(tmp_path / "WakeM_00_000000.bin")
+
+
+def test_parse_wake_monitor_file_invalid_count(tmp_path: Path) -> None:
+    """A NaN point-count field raises ParserError."""
+    f = tmp_path / "WakeM_00_000000.bin"
+    f.write_bytes(struct.pack("<d", float("nan")))
+    with pytest.raises(ParserError):
+        parse_wake_monitor_file(f)
+
+
+def test_parse_wake_monitor_file_nonpositive_count(tmp_path: Path) -> None:
+    """A non-positive point count raises ParserError."""
+    f = tmp_path / "WakeM_00_000000.bin"
+    f.write_bytes(struct.pack("<d", 0.0))
+    with pytest.raises(ParserError):
+        parse_wake_monitor_file(f)
+
+
+def test_parse_wake_monitor_file_truncated(tmp_path: Path) -> None:
+    """A file claiming more points than it holds raises ParserError."""
+    f = tmp_path / "WakeM_00_000000.bin"
+    raw = struct.pack("<d", 5.0) + struct.pack("<3d", 1.0, 2.0, 3.0)
+    f.write_bytes(raw)
+    with pytest.raises(ParserError):
+        parse_wake_monitor_file(f)
+
+
+# ---------------------------------------------------------------------------
+# parse_monitor_header (legacy header parser)
+# ---------------------------------------------------------------------------
+
+def test_parse_monitor_header_key_value_format(tmp_path: Path) -> None:
+    """parse_monitor_header reads ``% key = value`` headers."""
+    f = _write_text(
+        tmp_path / "Monitor_Ez_m1_N1.txt",
+        "% field component = Ex\n"
+        "% kt = 81\n"
+        "% ht = 1.000000e-03\n"
+        "% initial time = 2.1\n"
+        "% This is a comment\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    h = parse_monitor_header(f)
+    assert h["kt"] == 81
+    assert h["ht"] == pytest.approx(0.001)
+    assert h["t0"] == pytest.approx(2.1)
+
+
+def test_parse_monitor_header_comma_format(tmp_path: Path) -> None:
+    """parse_monitor_header reads ``% kt = 100, ht = 0.001`` lists."""
+    f = _write_text(
+        tmp_path / "Monitor_m1_N1.txt",
+        "% kt = 100, ht = 0.001, t0 = 0.0\n"
+        "% radial grid size = 10\n",
+    )
+    h = parse_monitor_header(f)
+    assert h["kt"] == 100
+    assert h["ht"] == pytest.approx(0.001)
+    assert h["t0"] == pytest.approx(0.0)
+
+
+def test_parse_monitor_header_missing(tmp_path: Path) -> None:
+    """parse_monitor_header on a missing file raises ParserError."""
+    with pytest.raises(ParserError):
+        parse_monitor_header(tmp_path / "nope.txt")
+
+
+# ---------------------------------------------------------------------------
+# _parse_monitor_full (direct, both time axes)
+# ---------------------------------------------------------------------------
+
+def test_parse_monitor_full_s_and_z_types(tmp_path: Path) -> None:
+    """s-type (k_z) and z-type (k_s) headers are parsed into their keys."""
+    s_f = _write_text(
+        tmp_path / "Monitor_m00_N01.txt",
+        "% field component = Ez\n"
+        "% k_ct=2 h_ct=1.000000e-03 ct0=2.100000e-02\n"
+        "% time coordinate = s (s-time)\n"
+        "% k_z=2 h_z=5.000000e-04 z0=0.000000e+00\n"
+        "% custom=abc\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    h_s = _parse_monitor_full(s_f)
+    assert h_s["field_component"] == "Ez"
+    assert h_s["time_type"] == "s"
+    assert h_s["k_ct"] == 2
+    assert h_s["h_ct"] == pytest.approx(0.001)
+    assert h_s["ct0"] == pytest.approx(0.021)
+    assert h_s["k_z"] == 2
+    assert h_s["custom"] == "abc"
+    assert h_s["k_r"] == 1
+
+    z_f = _write_text(
+        tmp_path / "Monitor_m00_N01.txt",
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% time coordinate = z (z-time)\n"
+        "% k_s=2 h_s=5.000000e-04 s0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    h_z = _parse_monitor_full(z_f)
+    assert h_z["time_type"] == "z"
+    assert h_z["k_s"] == 2
+    assert h_z["h_s"] == pytest.approx(5.0e-4)
+    assert "k_z" not in h_z
+
+
+def test_parse_monitor_full_filename_component(tmp_path: Path) -> None:
+    """The field component is inferred from the filename when absent."""
+    f = _write_text(
+        tmp_path / "Monitor_Ez_m00_N01.txt",
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_s=2 h_s=5.000000e-04 s0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    assert _parse_monitor_full(f)["field_component"] == "Ez"
+
+
+def test_parse_monitor_full_missing(tmp_path: Path) -> None:
+    """_parse_monitor_full on a missing file raises ParserError."""
+    with pytest.raises(ParserError):
+        _parse_monitor_full(tmp_path / "nope.txt")
+
+
+# ---------------------------------------------------------------------------
+# _load_current_file error paths
+# ---------------------------------------------------------------------------
+
+def test_load_current_file_error_paths(tmp_path: Path) -> None:
+    """Empty, non-numeric, and single-column current files are handled."""
+    # Non-numeric content → ParserError.
+    bad = _write_text(tmp_path / "Iz0.txt", "abc def\n")
+    with pytest.raises(ParserError):
+        _load_current_file(bad)
+
+    # Comment-only file → loadtxt yields zero rows → ParserError.
+    empty = _write_text(tmp_path / "Iz0.txt", "# nothing here\n")
+    with pytest.raises(ParserError):
+        _load_current_file(empty)
+
+    # A single scalar is reshaped to (1, 1).
+    scalar = _write_text(tmp_path / "Iz0.txt", "5.0\n")
+    s, cur = _load_current_file(scalar)
+    assert s.shape == (1,)
+    assert s[0] == pytest.approx(5.0)
+
+    # A single-column file is reshaped to a column vector.
+    one_col = _write_text(tmp_path / "Iz0.txt", "1.0\n2.0\n")
+    s, cur = _load_current_file(one_col)
+    np.testing.assert_allclose(s, [1.0, 2.0])
+    assert cur.shape == (2, 0)
+
+
+# ---------------------------------------------------------------------------
+# load_wcc / load_wss — malformed content
+# ---------------------------------------------------------------------------
+
+def test_load_wcc_wss_malformed(tmp_path: Path) -> None:
+    """Non-numeric coupling-matrix files raise ParserError."""
+    _write_text(tmp_path / "round" / "Wcc_odd.txt", "not a matrix\n")
+    _write_text(tmp_path / "round" / "Wss_odd.txt", "also bad\n")
+    loader = OutputLoader(tmp_path)
+    with pytest.raises(ParserError):
+        loader.load_wcc()
+    with pytest.raises(ParserError):
+        loader.load_wss()
+
+
+# ---------------------------------------------------------------------------
+# load_monitor — header/geometry warning paths
+# ---------------------------------------------------------------------------
+
+def test_load_monitor_kt_mismatch_and_bad_kr(tmp_path: Path) -> None:
+    """A k_ct≠rows header and a non-positive k_r are tolerated."""
+    _write_text(
+        tmp_path / "round" / "Monitor_m00_N01.txt",
+        "% k_ct=5 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_s=2 h_s=5.000000e-04 s0=0.000000e+00\n"
+        "% k_r=-1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    mon = OutputLoader(tmp_path).load_monitor(0, 1)
+    assert mon is not None
+    assert mon.time_type == "z"
+    np.testing.assert_allclose(mon.T, [0.0, 0.001])
+    assert mon.F.shape == (2, 2, 1)
+
+
+def test_load_monitor_invalid_kz_and_ks(tmp_path: Path) -> None:
+    """A non-positive k_z / k_s is clamped to 1."""
+    s_f = _write_text(
+        tmp_path / "round" / "Monitor_m00_N01.txt",
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_z=-1 h_z=5.000000e-04 z0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    loader = OutputLoader(tmp_path)
+    mon_s = loader.load_monitor(0, 1)
+    assert mon_s is not None
+    assert mon_s.time_type == "s"
+    assert mon_s.Z.shape == (1,)
+
+    (tmp_path / "round" / "Monitor_m00_N01.txt").write_text(
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_s=-1 h_s=5.000000e-04 s0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n"
+    )
+    mon_z = loader.load_monitor(0, 1)
+    assert mon_z is not None
+    assert mon_z.time_type == "z"
+    assert mon_z.F.shape == (2, 2)
+
+
+def test_load_monitor_time_type_fallback(tmp_path: Path) -> None:
+    """A header without k_z/k_s/time_type falls back to the first line."""
+    # First header line names time=s.
+    s_f = _write_text(
+        tmp_path / "round" / "Monitor_m00_N01.txt",
+        "% time = s\n"
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    loader = OutputLoader(tmp_path)
+    mon_s = loader.load_monitor(0, 1)
+    assert mon_s is not None
+    assert mon_s.time_type == "s"
+
+    # No time info anywhere → default to 'z' with a warning.
+    (tmp_path / "round" / "Monitor_m00_N01.txt").write_text(
+        "% field component = Ez\n"
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n"
+    )
+    mon_z = loader.load_monitor(0, 1)
+    assert mon_z is not None
+    assert mon_z.time_type == "z"
+
+
+def test_load_monitor_coordinate_only(tmp_path: Path) -> None:
+    """A coordinate-only monitor (no field columns) is skipped."""
+    _write_text(
+        tmp_path / "round" / "Monitor_m00_N01.txt",
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_s=2 h_s=5.000000e-04 s0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0\n"
+        "0.001\n",
+    )
+    assert OutputLoader(tmp_path).load_monitor(0, 1) is None
+
+
+def test_load_monitor_scalar_data(tmp_path: Path) -> None:
+    """A monitor with a single scalar data value is normalised then skipped."""
+    _write_text(
+        tmp_path / "round" / "Monitor_m00_N01.txt",
+        "% k_ct=1 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_s=1 h_s=5.000000e-04 s0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.5\n",
+    )
+    assert OutputLoader(tmp_path).load_monitor(0, 1) is None
+
+
+def test_load_monitor_time_type_from_header(tmp_path: Path) -> None:
+    """A ``(z-time)`` header keyword drives time_type when no k_z/k_s exist."""
+    _write_text(
+        tmp_path / "round" / "Monitor_m00_N01.txt",
+        "% time coordinate = z (z-time)\n"
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    mon = OutputLoader(tmp_path).load_monitor(0, 1)
+    assert mon is not None
+    assert mon.time_type == "z"
+
+
+def test_load_monitor_first_line_time_z(tmp_path: Path) -> None:
+    """The first header line naming ``time = z`` is honoured in the fallback."""
+    _write_text(
+        tmp_path / "round" / "Monitor_m00_N01.txt",
+        "% time = z\n"
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    mon = OutputLoader(tmp_path).load_monitor(0, 1)
+    assert mon is not None
+    assert mon.time_type == "z"
+
+
+def test_load_monitor_non_numeric_data(tmp_path: Path) -> None:
+    """A monitor whose data rows are not numeric raises ParserError."""
+    _write_text(
+        tmp_path / "round" / "Monitor_m00_N01.txt",
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_s=2 h_s=5.000000e-04 s0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 abc 2.0\n",
+    )
+    with pytest.raises(ParserError):
+        OutputLoader(tmp_path).load_monitor(0, 1)
+
+
+def test_parse_monitor_full_phi_component(tmp_path: Path) -> None:
+    """The Ep (E_phi) component is detected from a header line."""
+    f = _write_text(
+        tmp_path / "Monitor_m00_N01.txt",
+        "% field component = Ep\n"
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_s=2 h_s=5.000000e-04 s0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    assert _parse_monitor_full(f)["field_component"] == "Ep"
+
+
+def test_load_monitor_flat_grid_fallback(tmp_path: Path) -> None:
+    """A field-column count that disagrees with the header returns a flat grid."""
+    _write_text(
+        tmp_path / "round" / "Monitor_m00_N01.txt",
+        "% k_ct=2 h_ct=1.000000e-03 ct0=0.000000e+00\n"
+        "% k_s=3 h_s=5.000000e-04 s0=0.000000e+00\n"
+        "% k_r=1 h_r=1.000000e-03 r0=0.000000e+00\n"
+        "0.0 1.0 2.0\n"
+        "0.001 3.0 4.0\n",
+    )
+    mon = OutputLoader(tmp_path).load_monitor(0, 1)
+    assert mon is not None
+    assert mon.time_type == "z"
+    assert mon.F.shape == (2, 2)
+
+
+# ---------------------------------------------------------------------------
+# load_particles error paths
+# ---------------------------------------------------------------------------
+
+def test_load_particles_error_paths(tmp_path: Path) -> None:
+    """Malformed particle dumps raise ParserError or return None."""
+    data_dir = tmp_path / "round"
+    data_dir.mkdir(parents=True)
+    loader = OutputLoader(tmp_path)
+
+    # particles.out is a directory → read_bytes raises OSError.
+    (data_dir / "particles.out").mkdir()
+    with pytest.raises(ParserError):
+        loader.load_particles()
+    (data_dir / "particles.out").rmdir()
+
+    # Too small to hold the leading two doubles.
+    _write_text(data_dir / "particles.out", "")
+    (data_dir / "particles.out").write_bytes(b"\x00\x00")
+    with pytest.raises(ParserError):
+        loader.load_particles()
+
+    # NaN particle count.
+    (data_dir / "particles.out").write_bytes(struct.pack("<dd", float("nan"), 1.0))
+    with pytest.raises(ParserError):
+        loader.load_particles()
+
+    # Non-positive particle count → None.
+    (data_dir / "particles.out").write_bytes(struct.pack("<dd", 0.0, 1.0))
+    assert loader.load_particles() is None
+
+    # Count claims 2 particles but the file is truncated.
+    raw = struct.pack("<dd", 2.0, 1.0)
+    raw += struct.pack("<6d", *([1.0] * 6))  # one particle's coords only
+    raw += struct.pack("<q", 0)
+    (data_dir / "particles.out").write_bytes(raw)
+    with pytest.raises(ParserError):
+        loader.load_particles()
+
+
+# ---------------------------------------------------------------------------
+# load_beam_moments — missing / malformed
+# ---------------------------------------------------------------------------
+
+def test_load_beam_moments_missing_and_malformed(tmp_path: Path) -> None:
+    """Missing beam-moment files return None; malformed ones raise."""
+    (tmp_path / "round").mkdir(parents=True)
+    loader = OutputLoader(tmp_path)
+    assert loader.load_beam_moments() is None
+
+    _write_text(tmp_path / "round" / "BeamMomentsMonitor.txt", "abc\n")
+    with pytest.raises(ParserError):
+        loader.load_beam_moments()
+
+
+# ---------------------------------------------------------------------------
+# load_bunch_profile — offset and degenerate files
+# ---------------------------------------------------------------------------
+
+def test_load_bunch_profile_with_offset(tmp_path: Path) -> None:
+    """A positive offset selects column offset+2 of Iz0.txt."""
+    _write_text(
+        tmp_path / "round" / "Iz0.txt",
+        "0.0 1.0 5.0 9.0\n0.1 1.1 6.0 10.0\n0.2 1.2 7.0 11.0\n",
+    )
+    s, current = load_bunch_profile(tmp_path / "round", offset=1)
+    np.testing.assert_allclose(current, [9.0e9, 10.0e9, 11.0e9])
+
+
+def test_load_bunch_profile_offset_out_of_range(tmp_path: Path) -> None:
+    """An out-of-range offset is clamped to the last column."""
+    _write_text(
+        tmp_path / "round" / "Iz0.txt",
+        "0.0 1.0 5.0\n0.1 1.1 6.0\n0.2 1.2 7.0\n",
+    )
+    s, current = load_bunch_profile(tmp_path / "round", offset=100)
+    np.testing.assert_allclose(current, [5.0e9, 6.0e9, 7.0e9])
+
+
+def test_load_bunch_profile_degenerate(tmp_path: Path) -> None:
+    """Empty/scalar Iz0.txt returns (None, None); non-numeric raises."""
+    # Scalar single-value file → not usable.
+    _write_text(tmp_path / "round" / "Iz0.txt", "5.0\n")
+    assert load_bunch_profile(tmp_path / "round", offset=0) == (None, None)
+
+    # Non-numeric content → ParserError.
+    _write_text(tmp_path / "round" / "Iz0.txt", "abc def\n")
+    with pytest.raises(ParserError):
+        load_bunch_profile(tmp_path / "round", offset=0)
+
+
+# ---------------------------------------------------------------------------
+# geometry auto-detection edge cases
+# ---------------------------------------------------------------------------
+
+def test_geometry_autodetect_direct_matching_name(tmp_path: Path) -> None:
+    """A data dir named with a geometry prefix but no subdir is matched."""
+    data = tmp_path / "round_more"
+    data.mkdir(parents=True)
+    _write_text(data / "wakeL_00.txt", _valid_wake_lines())
+    loader = OutputLoader(data)
+    assert loader.geometry_type == "round"
+    assert loader._data_dir == data.resolve()
+
+
+def test_geometry_autodetect_skips_non_dir(tmp_path: Path) -> None:
+    """Non-directory entries are skipped during one-level-deep search."""
+    # Name the plain file so it sorts before the matching subdirectory.
+    _write_text(tmp_path / "a_note.txt", "not a dir\n")
+    _make_wake_file(tmp_path, subdir="magn_res")
+    loader = OutputLoader(tmp_path)
+    assert loader.geometry_type == "magn"
+    assert loader._data_dir == (tmp_path / "magn_res").resolve()
+
+
+def test_geometry_autodetect_fallback(tmp_path: Path) -> None:
+    """No matching subdir anywhere falls back to the directory itself."""
+    (tmp_path / "misc").mkdir()
+    loader = OutputLoader(tmp_path)
+    assert loader.geometry_type == "unknown"
+    assert loader._data_dir == tmp_path.resolve()
+
+
+def test_resolve_data_dir_lazy(tmp_path: Path) -> None:
+    """A reset _data_dir triggers auto-detection on demand."""
+    loader = _make_loader(tmp_path)
+    assert loader.geometry_type == "round"
+    loader._data_dir = None
+    s, *_ = loader.load_wake(0)
+    np.testing.assert_allclose(s, [0.0, 0.001, 0.002])

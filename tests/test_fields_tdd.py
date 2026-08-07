@@ -15,14 +15,26 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# Headless matplotlib backend must be selected before any pyplot import so
+# the animation / 3-D surface tests run without a display.
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from pyecho.datamodel import MonitorData
 from pyecho.errors import PostProcessError
 from pyecho.postprocess.fields import (
+    _parse_width_from_monitor,
+    _plot_field_2d,
+    animate_field_monitor,
     extract_field_at_point,
     extract_point_monitor,
+    plot_field_3d,
     process_field_monitor,
     save_point_monitor,
     synthesize_total_field,
+    synthesize_total_field_from_loader,
 )
 
 # ---------------------------------------------------------------------------
@@ -625,3 +637,319 @@ def test_save_point_monitor_two_column_layout() -> None:
     assert loaded.ndim == 2
     assert loaded.shape == (4, 2)
     np.testing.assert_allclose(loaded, np.column_stack([T, trace]))
+
+
+# ---------------------------------------------------------------------------
+# extract_field_at_point — remaining 3-D / edge-case paths
+# ---------------------------------------------------------------------------
+
+
+def test_extract_3d_r_only_median_z_slice() -> None:
+    """3-D monitor with r only returns the (t, r) slice at median z."""
+    F = np.arange(18.0).reshape(3, 3, 2)
+    mon = make_monitor(F, T=np.array([0.0, 1.0, 2.0]),
+                       Z=np.array([0.0, 0.5, 1.0]),
+                       R=np.array([0.0, 0.5]))
+    out = extract_field_at_point(mon, r=0.0)
+    # median(Z) == 0.5 -> z_idx == 1 -> F[:, 1, :]
+    assert out.shape == (3, 2)
+    np.testing.assert_array_equal(out, F[:, 1, :])
+
+
+def test_extract_3d_no_coords_returns_volume() -> None:
+    """3-D monitor with no coordinates returns the full volume unchanged."""
+    F = np.arange(18.0).reshape(3, 3, 2)
+    mon = make_monitor(F, T=np.array([0.0, 1.0, 2.0]),
+                       Z=np.array([0.0, 0.5, 1.0]),
+                       R=np.array([0.0, 0.5]))
+    np.testing.assert_array_equal(extract_field_at_point(mon), F)
+
+
+def test_extract_4d_warning_returns_raw() -> None:
+    """Unsupported 4-D data falls through and returns the raw array."""
+    F = np.zeros((2, 2, 2, 2))
+    mon = make_monitor(F)
+    out = extract_field_at_point(mon, t=0.0)
+    np.testing.assert_array_equal(out, F)
+
+
+def test_extract_1d_empty_returns_raw() -> None:
+    """An empty 1-D monitor returns the raw (empty) trace unchanged."""
+    F = np.array([])
+    mon = make_monitor(F)
+    out = extract_field_at_point(mon)
+    assert out.shape == (0,)
+
+
+def test_extract_2d_single_grid_point() -> None:
+    """A 1x1 monitor returns the single grid value at (t, r)."""
+    F = np.array([[5.0]])
+    mon = make_monitor(F, T=np.array([0.0]), R=np.array([0.0]))
+    assert extract_field_at_point(mon, t=0.0, r=0.0) == pytest.approx(5.0)
+
+
+def test_extract_2d_nan_propagates() -> None:
+    """NaN in the monitor data propagates through interpolation."""
+    F = np.array([[0.0, 1.0], [np.nan, 3.0]])
+    mon = make_monitor(F, T=np.array([0.0, 1.0]), R=np.array([0.0, 1.0]))
+    assert np.isnan(extract_field_at_point(mon, t=0.5, r=0.5))
+
+
+# ---------------------------------------------------------------------------
+# synthesize_total_field — extra paths
+# ---------------------------------------------------------------------------
+
+
+def test_synth_weight_formula_nonzero_x0_and_x(tmp_path) -> None:
+    """Weight formula with both x0 and x non-zero (sin*sin synthesis)."""
+    D = 0.05
+    x0 = -0.002
+    x = 0.0015
+    data = np.array([[0.0, 1.0], [0.1, 2.0], [0.2, 3.0]])
+    p = tmp_path / "monitor_weight.txt"
+    _write_monitor(p, data, width=D)
+
+    result = synthesize_total_field([p], x0=x0, x=x, n_modes=1, D=D)
+
+    k_m = np.pi / D
+    weight = np.sin(k_m * (x0 + 0.5 * D)) * np.sin(k_m * (x + 0.5 * D))
+    np.testing.assert_allclose(result, data[:, 1:] * weight * (2.0 / D))
+
+
+def test_synth_single_column_data_no_coord_column(tmp_path) -> None:
+    """Monitor data with only field values (no leading coord col) works."""
+    D = 0.05
+    data = np.array([[1.0], [2.0], [3.0]])
+    p = tmp_path / "monitor_single_col.txt"
+    _write_monitor(p, data, width=D)
+
+    result = synthesize_total_field([p], x0=0.0, x=0.0, n_modes=1, D=D)
+
+    k_m = np.pi / D
+    weight = np.sin(k_m * 0.5 * D) * np.sin(k_m * 0.5 * D)
+    np.testing.assert_allclose(result, data * weight * (2.0 / D))
+
+
+def test_synth_n_modes_zero_raises(tmp_path) -> None:
+    """n_modes=0 skips every mode and raises PostProcessError."""
+    p = tmp_path / "monitor_zero_modes.txt"
+    _write_monitor(p, np.array([[0.0, 1.0], [0.1, 2.0]]), width=0.05)
+    with pytest.raises(PostProcessError, match="No valid monitor data"):
+        synthesize_total_field([p], x0=0.0, x=0.0, n_modes=0, D=0.05)
+
+
+def test_synth_load_failure_raises(tmp_path) -> None:
+    """A monitor file numpy cannot parse raises PostProcessError."""
+    p = tmp_path / "monitor_garbage.txt"
+    p.write_text("% Field=Ez time=z\nthis is not numbers\n", encoding="utf-8")
+    with pytest.raises(PostProcessError, match="Failed to load"):
+        synthesize_total_field([p], x0=0.0, x=0.0, n_modes=1, D=0.05)
+
+
+def test_synth_nan_data_propagates(tmp_path) -> None:
+    """NaN in modal data propagates to the synthesised total field."""
+    D = 0.05
+    data = np.array([[0.0, np.nan], [0.1, 2.0]])
+    p = tmp_path / "monitor_nan.txt"
+    _write_monitor(p, data, width=D)
+    result = synthesize_total_field([p], x0=0.0, x=0.0, n_modes=1, D=D)
+    assert np.isnan(result[0, 0])
+
+
+# ---------------------------------------------------------------------------
+# _parse_width_from_monitor — header edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_parse_width_unreadable_path_returns_none(tmp_path) -> None:
+    """An unreadable path (a directory) yields no width."""
+    d = tmp_path / "subdir"
+    d.mkdir()
+    assert _parse_width_from_monitor(d) is None
+
+
+def test_parse_width_non_comment_first_line_returns_none(tmp_path) -> None:
+    """A first line that is not a '%' comment yields no width."""
+    p = tmp_path / "monitor_no_comment.txt"
+    p.write_text("1.0 2.0\n3.0 4.0\n", encoding="utf-8")
+    assert _parse_width_from_monitor(p) is None
+
+
+def test_parse_width_bad_token_returns_none(tmp_path) -> None:
+    """A width= token that is not a float yields no width."""
+    p = tmp_path / "monitor_bad_width.txt"
+    p.write_text("% Field=Ez width=abc\n1.0 2.0\n", encoding="utf-8")
+    assert _parse_width_from_monitor(p) is None
+
+
+# ---------------------------------------------------------------------------
+# synthesize_total_field_from_loader
+# ---------------------------------------------------------------------------
+
+
+def test_synth_from_loader_basic(tmp_path) -> None:
+    """Wrapper finds zero-padded component files and stops at first gap."""
+    D = 0.05
+    _write_monitor(tmp_path / "Monitor_m01_N01_Ez.txt",
+                   np.array([[0.0, 1.0], [0.1, 2.0]]), width=D)
+    _write_monitor(tmp_path / "Monitor_m03_N01_Ez.txt",
+                   np.array([[0.0, 10.0], [0.1, 20.0]]), width=D)
+
+    res = synthesize_total_field_from_loader(tmp_path, component="Ez",
+                                             monitor_id=1, x0=0.0, x=0.0,
+                                             n_modes=35, D=None)
+    assert res.shape == (2, 1)
+    w1 = np.sin(np.pi / D * 0.5 * D) ** 2
+    w3 = np.sin(3.0 * np.pi / D * 0.5 * D) ** 2
+    expected = (np.array([1.0, 2.0]) * w1 + np.array([10.0, 20.0]) * w3) * (2.0 / D)
+    np.testing.assert_allclose(res[:, 0], expected)
+
+
+def test_synth_from_loader_zero_padded_no_comp(tmp_path) -> None:
+    """Wrapper accepts zero-padded names without a component suffix."""
+    D = 0.05
+    _write_monitor(tmp_path / "Monitor_m01_N01.txt",
+                   np.array([[0.0, 1.0], [0.1, 2.0]]), width=D)
+    res = synthesize_total_field_from_loader(tmp_path, component="Ez",
+                                             monitor_id=1, n_modes=35, D=D)
+    assert res.shape == (2, 1)
+
+
+def test_synth_from_loader_legacy_names(tmp_path) -> None:
+    """Wrapper falls back to unpadded legacy names with component suffix."""
+    D = 0.05
+    _write_monitor(tmp_path / "Monitor_m1_N1_Ez.txt",
+                   np.array([[0.0, 1.0], [0.1, 2.0]]), width=D)
+    res = synthesize_total_field_from_loader(tmp_path, component="Ez",
+                                             monitor_id=1, n_modes=35, D=D)
+    assert res.shape == (2, 1)
+
+
+def test_synth_from_loader_unpadded_no_comp(tmp_path) -> None:
+    """Wrapper falls back to unpadded legacy names without component suffix."""
+    D = 0.05
+    _write_monitor(tmp_path / "Monitor_m1_N1.txt",
+                   np.array([[0.0, 1.0], [0.1, 2.0]]), width=D)
+    res = synthesize_total_field_from_loader(tmp_path, component="Ez",
+                                             monitor_id=1, n_modes=35, D=D)
+    assert res.shape == (2, 1)
+
+
+def test_synth_from_loader_no_files_raises(tmp_path) -> None:
+    """An empty directory raises PostProcessError."""
+    with pytest.raises(PostProcessError, match="No monitor files"):
+        synthesize_total_field_from_loader(tmp_path, component="Ez",
+                                           monitor_id=1)
+
+
+# ---------------------------------------------------------------------------
+# animate_field_monitor
+# ---------------------------------------------------------------------------
+
+
+def _anim_monitor() -> MonitorData:
+    return make_monitor(
+        np.arange(24.0).reshape(4, 3, 2),
+        T=np.array([0.0, 1.0, 2.0, 3.0]),
+        Z=np.array([0.0, 0.5, 1.0]),
+        R=np.array([0.0, 0.5]),
+    )
+
+
+def test_animate_field_monitor_runs_headless() -> None:
+    """Animation over a 3-D monitor completes without error (Agg backend)."""
+    animate_field_monitor(_anim_monitor())  # should not raise
+    plt.close("all")
+
+
+def test_animate_field_monitor_saves_gif(tmp_path) -> None:
+    """Animation saves a GIF via the pillow writer."""
+    out = tmp_path / "anim.gif"
+    animate_field_monitor(_anim_monitor(), output=str(out))
+    assert out.is_file()
+    assert out.stat().st_size > 0
+
+
+def test_animate_field_monitor_saves_mp4_patched(tmp_path, monkeypatch) -> None:
+    """MP4 output invokes Animation.save with the ffmpeg writer."""
+    import matplotlib.animation as mpl_anim
+
+    saved: dict = {}
+    def fake_save(self, fname, **kw) -> None:
+        saved["writer"] = kw.get("writer")
+        saved["fname"] = fname
+    monkeypatch.setattr(mpl_anim.Animation, "save", fake_save)
+
+    out = tmp_path / "anim.mp4"
+    animate_field_monitor(_anim_monitor(), output=str(out))
+    assert saved["writer"] == "ffmpeg"
+    assert saved["fname"] == str(out)
+
+
+def test_animate_field_monitor_unknown_ext_gif_patched(tmp_path, monkeypatch) -> None:
+    """An unknown extension falls back to a pillow-written .gif."""
+    import matplotlib.animation as mpl_anim
+
+    saved: dict = {}
+    def fake_save(self, fname, **kw) -> None:
+        saved["writer"] = kw.get("writer")
+    monkeypatch.setattr(mpl_anim.Animation, "save", fake_save)
+
+    out = tmp_path / "anim.xyz"
+    animate_field_monitor(_anim_monitor(), output=str(out))
+    assert saved["writer"] == "pillow"
+    assert str(out).rsplit(".", 1)[0] + ".gif" == str(tmp_path / "anim.gif")
+
+
+def test_animate_field_monitor_non3d_raises() -> None:
+    """2-D monitor data raises ValueError."""
+    F = np.arange(12.0).reshape(3, 4)
+    mon = make_monitor(F)
+    with pytest.raises(ValueError, match="3-D"):
+        animate_field_monitor(mon)
+
+
+def test_plot_field_2d_default_scale() -> None:
+    """_plot_field_2d derives vmin/vmax from data when not supplied."""
+    fig, ax = plt.subplots()
+    try:
+        Z = np.array([0.0, 1.0, 2.0])
+        R = np.array([0.0, 1.0])
+        F = np.arange(6.0).reshape(3, 2)
+        ax_out = _plot_field_2d(ax, Z, R, F)
+        assert ax_out is ax
+    finally:
+        plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# plot_field_3d
+# ---------------------------------------------------------------------------
+
+
+def test_plot_field_3d_runs_headless() -> None:
+    """3-D surface plot completes without error (Agg backend)."""
+    plot_field_3d(_anim_monitor(), time_step=1)  # should not raise
+    plt.close("all")
+
+
+def test_plot_field_3d_saves_file(tmp_path) -> None:
+    """plot_field_3d saves the figure to the requested path."""
+    out = tmp_path / "field3d.png"
+    plot_field_3d(_anim_monitor(), time_step=0, output=str(out))
+    assert out.is_file()
+    assert out.stat().st_size > 0
+
+
+def test_plot_field_3d_time_step_clamped() -> None:
+    """A time_step beyond the last frame is clamped, not an error."""
+    plot_field_3d(_anim_monitor(), time_step=999)  # clamps to idx = 3
+    plt.close("all")
+
+
+def test_plot_field_3d_non3d_raises() -> None:
+    """2-D monitor data raises ValueError."""
+    F = np.arange(12.0).reshape(3, 4)
+    mon = make_monitor(F)
+    with pytest.raises(ValueError, match="3-D"):
+        plot_field_3d(mon)

@@ -1,6 +1,6 @@
 """Tests for :mod:`pyecho.runner` (ECHO2DRunner) and :mod:`pyecho.converge`.
 
-Covers pure / non-subprocess behaviour only:
+Covers:
 
 - ``_get_platform_key`` platform/arch key format
 - ``_find_project_root`` ECHO2D_v3_5 marker discovery
@@ -8,18 +8,19 @@ Covers pure / non-subprocess behaviour only:
 - ``_ensure_geometry_in_work_dir`` geometry copy behaviour
 - ``ECHO2DRunner.kill`` no-op / swallow / reference clearing
 - ``ECHO2DRunner`` constructor work-dir creation
+- ``ECHO2DRunner.run`` / ``run_stream`` subprocess flows with a mocked
+  ``subprocess.Popen``
 - ``ConvergenceReport`` convergence checks and summary formatting
 - ``ConvergenceRunner`` constructor base-run discovery
 
-Subprocess integration tests (mocks of ``subprocess.Popen`` /
-``ECHO2DRunner.run``) are intentionally removed.  They require a real ECHO2D
-binary — run with:
-
-    echo2d run single ...
+The subprocess tests mock ``subprocess.Popen`` (no real ECHO2D binary is
+needed) and mock ``pyecho.runner.OutputLoader`` so result building skips
+file I/O.
 """
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -29,7 +30,12 @@ import pytest
 import pyecho.runner as runner_mod
 from pyecho.config import ECHO2DParams
 from pyecho.converge import ConvergencePoint, ConvergenceReport, ConvergenceRunner
-from pyecho.errors import ExecutableNotFoundError
+from pyecho.datamodel import SimulationResult
+from pyecho.errors import (
+    ExecutableNotFoundError,
+    SimulationCrashedError,
+    SimulationTimeoutError,
+)
 from pyecho.project import ProjectManifest, RunManifest
 from pyecho.runner import ECHO2DRunner, _get_platform_key
 
@@ -45,6 +51,34 @@ def _make_runner(tmp_path: Path, name: str = "work") -> ECHO2DRunner:
     exe.parent.mkdir(exist_ok=True)
     exe.write_text("#!/bin/sh\n")
     return ECHO2DRunner(tmp_path / name, executable=str(exe))
+
+
+def _mock_process(
+    stdout_lines: list[str] | None = None,
+    wait_return: int = 0,
+) -> Mock:
+    """Build a Mock ``subprocess.Popen`` process for ECHO2DRunner flows."""
+    proc = Mock()
+    proc.stdout = stdout_lines if stdout_lines is not None else [
+        "Mode 0: 50%\n",
+        "Mode 0: 100%\n",
+    ]
+    proc.stderr.read.return_value = ""
+    proc.wait.return_value = wait_return
+    proc.pid = 12345
+    return proc
+
+
+def _configure_output_loader(mock_output_loader: Mock) -> None:
+    """Wire an empty OutputLoader so ``_build_result`` skips file I/O."""
+    loader = mock_output_loader.return_value
+    loader.load_all_wakes.return_value = {}
+    loader.load_currents.return_value = None
+    loader.load_currents_radial.return_value = None
+    loader.load_particles.return_value = None
+    loader.list_monitors.return_value = []
+    loader.load_all_wake_monitors.return_value = {}
+    loader.load_beam_moments.return_value = None
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +319,250 @@ def test_constructor_auto_detects_executable(tmp_path: Path) -> None:
 
     m.assert_called_once()
     assert runner.executable == str(exe.resolve())
+
+
+# ---------------------------------------------------------------------------
+# run() / run_stream() — subprocess flows (mocked subprocess.Popen)
+# ---------------------------------------------------------------------------
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_success(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """Successful run returns a SimulationResult and a correct Popen call."""
+    runner = _make_runner(tmp_path, name="work")
+    params = ECHO2DParams(GeometryFile="collimator.txt")
+    _configure_output_loader(mock_output_loader)
+    mock_popen.return_value = _mock_process(
+        stdout_lines=["Mode 0: 25%\n", "Mode 0: 50%\n", "Mode 0: 100%\n"]
+    )
+
+    result = runner.run(params, np=4)
+
+    assert isinstance(result, SimulationResult)
+    assert result.stdout == "Mode 0: 25%\nMode 0: 50%\nMode 0: 100%"
+    assert result.output_dir == str(runner.work_dir)
+    assert runner._current_process is None  # reference cleared after run
+
+    mock_popen.assert_called_once()
+    call = mock_popen.call_args
+    assert call.args[0] == [runner.executable]
+    assert call.kwargs["cwd"] == str(runner.work_dir)
+    assert call.kwargs["env"]["OMP_NUM_THREADS"] == "4"
+    assert call.kwargs["text"] is True
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_nonzero_exit(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """Non-zero exit code raises SimulationCrashedError."""
+    runner = _make_runner(tmp_path, name="work")
+    params = ECHO2DParams(GeometryFile="collimator.txt")
+    mock_popen.return_value = _mock_process(wait_return=1)
+
+    with pytest.raises(SimulationCrashedError) as excinfo:
+        runner.run(params)
+
+    assert excinfo.value.ctx["returncode"] == 1
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_timeout(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """TimeoutExpired from wait() becomes SimulationTimeoutError."""
+    runner = _make_runner(tmp_path, name="work")
+    params = ECHO2DParams(GeometryFile="collimator.txt")
+    mock_proc = _mock_process()
+    mock_proc.wait.side_effect = [
+        subprocess.TimeoutExpired("echo2d", 5),  # timed wait raises
+        0,  # post-kill wait succeeds
+    ]
+    mock_popen.return_value = mock_proc
+
+    with pytest.raises(SimulationTimeoutError) as excinfo:
+        runner.run(params, timeout=5)
+
+    assert excinfo.value.ctx["timeout"] == "5s"
+    mock_proc.kill.assert_called_once()
+    assert mock_proc.wait.call_count == 2  # timed wait + post-kill wait
+    assert runner._current_process is None
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_timeout_deadline_enforced_mid_stdout(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """Hanging stdout is caught by the mid-loop deadline check."""
+    runner = _make_runner(tmp_path, name="work")
+    params = ECHO2DParams(GeometryFile="collimator.txt")
+    mock_proc = _mock_process(stdout_lines=["Mode 0: 10%\n", "Mode 0: 20%\n"])
+    mock_popen.return_value = mock_proc
+
+    # start, check-line-1, check-line-2 (>deadline), elapsed
+    times = iter([100.0, 100.5, 200.0, 200.0])
+    with patch.object(
+        runner_mod.time, "monotonic", side_effect=lambda: next(times)
+    ):
+        with pytest.raises(SimulationTimeoutError) as excinfo:
+            runner.run(params, timeout=5)
+
+    assert excinfo.value.ctx["timeout"] == "5s"
+    assert excinfo.value.ctx["elapsed"] == "100.0s"  # 200.0 - 100.0
+    mock_proc.kill.assert_called_once()
+    mock_proc.wait.assert_called_once()
+    assert runner._current_process is None
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_file_not_found(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """FileNotFoundError from Popen becomes ExecutableNotFoundError."""
+    runner = _make_runner(tmp_path, name="work")
+    params = ECHO2DParams(GeometryFile="collimator.txt")
+    mock_popen.side_effect = FileNotFoundError("no such executable")
+
+    with pytest.raises(ExecutableNotFoundError) as excinfo:
+        runner.run(params)
+
+    assert "searched_paths" in excinfo.value.ctx
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_with_geometry_override(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """geometry_file overrides params.GeometryFile without mutating params."""
+    runner = _make_runner(tmp_path, name="work")
+    params = ECHO2DParams(GeometryFile="original.txt")
+    _configure_output_loader(mock_output_loader)
+    mock_popen.return_value = _mock_process()
+
+    result = runner.run(params, geometry_file="override.txt")
+
+    assert result.geometry_file == "override.txt"
+    assert params.GeometryFile == "original.txt"  # original not mutated
+    input_text = (runner.work_dir / "input_in.txt").read_text()
+    assert "GeometryFile=override.txt" in input_text
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_creates_missing_work_dir(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """run() recreates a work_dir deleted after construction."""
+    runner = _make_runner(tmp_path, name="work")
+    shutil.rmtree(runner.work_dir)
+    assert not runner.work_dir.exists()
+    _configure_output_loader(mock_output_loader)
+    mock_popen.return_value = _mock_process()
+
+    runner.run(ECHO2DParams(GeometryFile="collimator.txt"))
+
+    assert runner.work_dir.is_dir()
+    assert (runner.work_dir / "input_in.txt").is_file()
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_stream_yields_progress(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """run_stream yields progress dicts parsed from ECHO2D stdout."""
+    runner = _make_runner(tmp_path, name="work")
+    params = ECHO2DParams(GeometryFile="collimator.txt")
+    _configure_output_loader(mock_output_loader)
+    mock_popen.return_value = _mock_process(
+        stdout_lines=["Mode 0: 42%\n", "no progress here\n", "Mode 0: 100%\n"]
+    )
+
+    gen = runner.run_stream(params)
+    updates = list(gen)
+
+    assert updates == [
+        {"percent": 42.0, "message": "Mode 0: 42%"},
+        {"percent": 100.0, "message": "Mode 0: 100%"},
+    ]
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_stream_sets_current_process(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """run_stream tracks the live process on _current_process mid-stream."""
+    runner = _make_runner(tmp_path, name="work")
+    params = ECHO2DParams(GeometryFile="collimator.txt")
+    _configure_output_loader(mock_output_loader)
+    mock_proc = _mock_process(stdout_lines=["Mode 0: 50%\n"])
+    mock_popen.return_value = mock_proc
+
+    gen = runner.run_stream(params)
+    first = next(gen)
+
+    assert first == {"percent": 50.0, "message": "Mode 0: 50%"}
+    assert runner._current_process is mock_proc  # live while paused at yield
+
+    with pytest.raises(StopIteration):
+        next(gen)
+
+    assert runner._current_process is None  # cleared once finished
+
+
+@patch("subprocess.Popen")
+@patch("pyecho.runner.OutputLoader")
+def test_run_stream_returns_result(
+    mock_output_loader: Mock,
+    mock_popen: Mock,
+    tmp_path: Path,
+) -> None:
+    """run_stream returns a SimulationResult via StopIteration.value."""
+    runner = _make_runner(tmp_path, name="work")
+    params = ECHO2DParams(GeometryFile="collimator.txt")
+    _configure_output_loader(mock_output_loader)
+    mock_popen.return_value = _mock_process(stdout_lines=["Mode 0: 100%\n"])
+
+    gen = runner.run_stream(params)
+    updates: list[dict[str, float]] = []
+    result: SimulationResult | None = None
+    while True:
+        try:
+            updates.append(next(gen))
+        except StopIteration as exc:
+            result = exc.value
+            break
+
+    assert updates == [{"percent": 100.0, "message": "Mode 0: 100%"}]
+    assert isinstance(result, SimulationResult)
+    assert result.stdout == "Mode 0: 100%"
 
 
 # ---------------------------------------------------------------------------

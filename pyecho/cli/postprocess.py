@@ -76,6 +76,42 @@ def _plot_wake_result(wake_result: Any, geo_type: str, wake_out: Path) -> None:
         pass  # plotting is best-effort
 
 
+def _plot_particle_phase_space(particles: dict[str, Any], save_path: str) -> None:
+    """Generate x–px and y–py phase-space scatter plots from *particles*.
+
+    Plots active (status == 0) particles only, subsampled to at most 5000
+    per plane for readability.  Saves the figure to *save_path* using the
+    headless ``Agg`` backend so it works on CI/headless machines.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    active = particles["status"] == 0
+    x = particles["x"][active][:5000]
+    y = particles["y"][active][:5000]
+    px = particles["px"][active][:5000]
+    py = particles["py"][active][:5000]
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    axes[0].scatter(x * 1e3, px, s=1, alpha=0.5)
+    axes[0].set_xlabel("x [mm]")
+    axes[0].set_ylabel("px [βγ]")
+    axes[0].set_title("x–px phase space")
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].scatter(y * 1e3, py, s=1, alpha=0.5)
+    axes[1].set_xlabel("y [mm]")
+    axes[1].set_ylabel("py [βγ]")
+    axes[1].set_title("y–py phase space")
+    axes[1].grid(True, alpha=0.3)
+
+    fig.suptitle(f"Phase Space (N={particles['Np']}, active only)", fontweight="bold")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 @postprocess_app.command("wake")
 def postprocess_wake(
     output_dir: Annotated[str, typer.Argument(help="Output directory or run ID (e.g. 001)")],
@@ -632,20 +668,33 @@ def postprocess_particles(
         Optional[str],
         typer.Option("--output", "-o", help="Output file for particle statistics"),
     ] = None,
+    plot: Annotated[
+        bool,
+        typer.Option("--plot", "-p", help="Generate phase-space scatter plots (x–px, y–py)"),
+    ] = False,
     phase_space: Annotated[
         bool,
-        typer.Option("--phase-space", help="Generate phase-space scatter plots"),
+        typer.Option("--phase-space", hidden=True,
+                     help="Deprecated alias for --plot (kept for backward compatibility)"),
+    ] = False,
+    emittance: Annotated[
+        bool,
+        typer.Option("--emittance", help="Compute and display normalized emittance"),
     ] = False,
 ) -> None:
     """Post-process particle tracking data.
 
     Loads ``particles.out`` from ECHO2D output and displays phase-space
-    statistics.  Optionally converts to ASTRA format for further tracking.
+    statistics in a table.  Optionally converts to ASTRA format for
+    further tracking, generates phase-space scatter plots, and computes
+    normalized emittances.
 
     \\b
     Examples:
-      echo2d postprocess particles .                 # show statistics
-      echo2d postprocess particles . --phase-space    # phase-space plots
+      echo2d postprocess particles .                    # show statistics
+      echo2d postprocess particles . --plot             # phase-space plots
+      echo2d postprocess particles . --emittance        # normalized emittance
+      echo2d postprocess particles . --plot --emittance # everything
       echo2d postprocess particles . --to-astra out.astra -q 1e-9
     """
     from pyecho.project import resolve_run_dir
@@ -682,23 +731,45 @@ def postprocess_particles(
     Np = int(particles.get("Np", 0))
     stats = compute_particle_statistics(particles)
 
-    # Display statistics
-    console.print(
-        Panel.fit(
-            f"[bold]Particle Data: {part_file.name}[/bold]\n"
-            f"  Particles:  [cyan]{Np}[/cyan]\n"
-            f"  Mean x:     {stats.get('mean_x', 0):.4e} m\n"
-            f"  Mean y:     {stats.get('mean_y', 0):.4e} m\n"
-            f"  Mean z:     {stats.get('mean_z', 0):.4e} m\n"
-            f"  σ_x:        {stats.get('sigma_x', 0):.4e} m\n"
-            f"  σ_y:        {stats.get('sigma_y', 0):.4e} m\n"
-            f"  σ_z:        {stats.get('sigma_z', 0):.4e} m\n"
-            f"  Mean px:    {stats.get('mean_px', 0):.4e}\n"
-            f"  Mean py:    {stats.get('mean_py', 0):.4e}\n"
-            f"  Mean pz:    {stats.get('mean_pz', 0):.4e}",
-            title="Particle Statistics",
-        )
-    )
+    # Display statistics in a Rich table
+    stat_table = Table(title=f"Particle Statistics — {part_file.name}")
+    stat_table.add_column("Quantity", style="cyan")
+    stat_table.add_column("Value", justify="right")
+    stat_table.add_column("Units", style="dim")
+    for label, key, unit in (
+        ("Particles", "Np", ""),
+        ("Active", "n_active", ""),
+        ("Lost", "n_lost", ""),
+        ("<x>", "mean_x", "m"),
+        ("σ_x", "sigma_x", "m"),
+        ("<y>", "mean_y", "m"),
+        ("σ_y", "sigma_y", "m"),
+        ("<z>", "mean_z", "m"),
+        ("σ_z", "sigma_z", "m"),
+        ("<px>", "mean_px", ""),
+        ("σ_px", "sigma_px", ""),
+        ("<py>", "mean_py", ""),
+        ("σ_py", "sigma_py", ""),
+        ("<pz>", "mean_pz", ""),
+        ("σ_pz", "sigma_pz", ""),
+    ):
+        value = Np if key == "Np" else stats.get(key, 0.0)
+        fmt = f"{value:d}" if key == "Np" else f"{value:.4e}"
+        stat_table.add_row(label, fmt, unit)
+    console.print(stat_table)
+
+    # Normalized emittance display (--emittance)
+    if emittance:
+        emit_table = Table(title="Normalized Emittance (RMS)")
+        emit_table.add_column("Plane", style="cyan")
+        emit_table.add_column("ε_n (m)", justify="right")
+        emit_table.add_column("ε_n (mm·mrad)", justify="right")
+        for plane, key in (("x", "emit_x"), ("y", "emit_y"), ("z", "emit_z")):
+            val = stats.get(key, 0.0)
+            emit_table.add_row(
+                plane, f"{val:.4e}", f"{val * 1e6:.4f}"
+            )
+        console.print(emit_table)
 
     if output:
         Path(output).write_text(
@@ -726,35 +797,16 @@ def postprocess_particles(
             console.print(f"[red]Error: ASTRA conversion failed: {exc}[/red]")
             raise typer.Exit(1)
 
-    # Phase-space plots
-    if phase_space:
-        import matplotlib.pyplot as plt
-        active = particles["status"] == 0
-        x = particles["x"][active][:5000]
-        y = particles["y"][active][:5000]
-        z = particles["z"][active][:5000]
-        px = particles["px"][active][:5000]
-        py = particles["py"][active][:5000]
-        pz = particles["pz"][active][:5000]
-
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        axes[0].scatter(x * 1e3, px, s=1, alpha=0.5)
-        axes[0].set_xlabel("x [mm]"); axes[0].set_ylabel("px [kg·m/s]")
-        axes[0].set_title("x–px phase space"); axes[0].grid(True, alpha=0.3)
-
-        axes[1].scatter(y * 1e3, py, s=1, alpha=0.5)
-        axes[1].set_xlabel("y [mm]"); axes[1].set_ylabel("py [kg·m/s]")
-        axes[1].set_title("y–py phase space"); axes[1].grid(True, alpha=0.3)
-
-        axes[2].scatter(z * 1e3, pz, s=1, alpha=0.5)
-        axes[2].set_xlabel("z [mm]"); axes[2].set_ylabel("pz [kg·m/s]")
-        axes[2].set_title("z–pz phase space"); axes[2].grid(True, alpha=0.3)
-
-        fig.suptitle(f"Phase Space (N={Np}, active only)", fontweight="bold")
-        fig.tight_layout()
-        if output:
-            fig.savefig(output.replace(".txt", "") + "_phase_space.png", dpi=150, bbox_inches="tight")
-        plt.show()
+    # Phase-space scatter plots (--plot or deprecated --phase-space)
+    if plot or phase_space:
+        processed_dir = _find_processed_dir(out_path) / "particles"
+        processed_dir.mkdir(parents=True, exist_ok=True)
+        save_path = (
+            f"{output.replace('.txt', '')}_phase_space.png"
+            if output else str(processed_dir / "phase_space.png")
+        )
+        _plot_particle_phase_space(particles, save_path)
+        console.print(f"  [dim]Phase-space plot saved to {save_path}[/dim]")
 
 
 @postprocess_app.command("wake-monitor")

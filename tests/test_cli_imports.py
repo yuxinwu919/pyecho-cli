@@ -148,6 +148,29 @@ def test_postprocess_summary_help() -> None:
         )
 
 
+def test_run_start_help_shows_with_particles() -> None:
+    """``echo2d run start --help`` advertises the --with-particles option."""
+    result = runner.invoke(app, ["run", "start", "--help"])
+    assert result.exit_code == 0, result.exception
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--with-particles" in clean, (
+        f"expected '--with-particles' in `echo2d run start --help` output:\n"
+        f"{result.output}"
+    )
+
+
+def test_postprocess_particles_help_shows_plot_and_emittance() -> None:
+    """``echo2d postprocess particles --help`` advertises --plot/--emittance."""
+    result = runner.invoke(app, ["postprocess", "particles", "--help"])
+    assert result.exit_code == 0, result.exception
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    for token in ("--plot", "--emittance"):
+        assert token in clean, (
+            f"expected {token!r} in `echo2d postprocess particles --help` "
+            f"output:\n{result.output}"
+        )
+
+
 def test_postprocess_summary_no_matches_exits_cleanly() -> None:
     """``echo2d postprocess summary <missing>`` errors cleanly (exit 1)."""
     result = runner.invoke(

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Sequence, cast
 
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
@@ -56,6 +56,39 @@ def _trace_at_pos(
     return cast(np.ndarray, F[:, idx_lo] * (1 - frac) + F[:, idx_hi] * frac)
 
 
+def _regular_interp(
+    axes: Sequence[np.ndarray],
+    values: np.ndarray,
+    point: Sequence[float],
+) -> float:
+    """Linear interpolation that tolerates degenerate (length-1) axes.
+
+    :class:`RegularGridInterpolator` returns NaN when any axis has a single
+    grid point, so such axes are collapsed by index selection and the
+    remaining axes are interpolated normally.  If every axis is degenerate,
+    the sole grid value is returned.
+    """
+    axes = [np.asarray(a, dtype=float) for a in axes]
+    point = list(point)
+    active: list[tuple[np.ndarray, float]] = []
+    # Collapse from the highest axis downward so earlier indices stay valid.
+    for i in range(len(axes) - 1, -1, -1):
+        if len(axes[i]) == 1:
+            values = np.take(values, 0, axis=i)
+        else:
+            active.append((axes[i], point[i]))
+    if not active:
+        return float(values)
+    active.reverse()  # restore ascending axis order
+    interp = RegularGridInterpolator(
+        tuple(a for a, _ in active),
+        values,
+        bounds_error=False,
+        fill_value=0.0,
+    )
+    return float(interp(np.atleast_2d([p for _, p in active]))[0])
+
+
 def _interp_2d_monitor(
     F: np.ndarray,
     time_axis: np.ndarray,
@@ -76,18 +109,12 @@ def _interp_2d_monitor(
     ``(nt, nz)`` one.
     """
     if t is not None and pos is not None:
-        interp = RegularGridInterpolator(
-            (time_axis, space_axis), F, bounds_error=False, fill_value=0.0
-        )
-        return float(interp(np.array([[t, pos]]))[0])
+        return _regular_interp((time_axis, space_axis), F, (t, pos))
     if pos is not None:
         return _trace_at_pos(F, space_axis, pos)
     if t is not None:
-        interp = RegularGridInterpolator(
-            (time_axis, space_axis), F, bounds_error=False, fill_value=0.0
-        )
         pos_mid = float(np.median(space_axis))
-        return float(interp(np.array([[t, pos_mid]]))[0])
+        return _regular_interp((time_axis, space_axis), F, (t, pos_mid))
     return F
 
 
@@ -138,10 +165,7 @@ def extract_field_at_point(
     if F.ndim == 1:
         # 1-D trace: assume it's along time or s
         if t is not None:
-            interp = RegularGridInterpolator(
-                (T,), F, bounds_error=False, fill_value=0.0
-            )
-            return float(interp(np.atleast_1d(t))[0])
+            return _regular_interp((T,), F, (t,))
         else:
             return F
 
@@ -164,18 +188,12 @@ def extract_field_at_point(
             if r is not None:
                 points.append(r)
                 axes.append(R)
-            interp = RegularGridInterpolator(
-                tuple(axes), F, bounds_error=False, fill_value=0.0
-            )
-            return float(interp(np.atleast_2d(points))[0])
+            return _regular_interp(axes, F, points)
         if z is not None and r is not None:
             # 1-D trace over time at a fixed (z, r)
             trace: np.ndarray = np.zeros(len(T), dtype=np.float64)
             for i in range(len(T)):
-                interp_zr = RegularGridInterpolator(
-                    (Z, R), F[i, :, :], bounds_error=False, fill_value=0.0
-                )
-                trace[i] = float(interp_zr(np.array([[z, r]]))[0])
+                trace[i] = _regular_interp((Z, R), F[i, :, :], (z, r))
             return trace
         if z is not None:
             # 2-D (t, z) slice at the median r
@@ -311,6 +329,9 @@ def synthesize_total_field(
             data = np.loadtxt(fpath, comments="%")
         except Exception as exc:
             raise PostProcessError(f"Failed to load {fpath}: {exc}") from exc
+        # A single-column monitor loads as a 1-D array; promote to (n, 1).
+        if data.ndim == 1:
+            data = data[:, np.newaxis]
 
         m = 2 * i + 1  # odd mode: 1, 3, 5, ...
 
@@ -530,10 +551,7 @@ def extract_point_monitor(
         # Note the TRANSPOSE: MATLAB reshape in column-major gives different
         # ordering. Our F is (nt, nz, nr), so F[i, :, :] directly works.
         FF = F[i, :, :]  # (nz, nr)
-        interp = RegularGridInterpolator(
-            (z_lab, R), FF, bounds_error=False, fill_value=0.0
-        )
-        trace[i] = float(-interp(np.array([[z, r]]))[0])  # MATLAB negates
+        trace[i] = -_regular_interp((z_lab, R), FF, (z, r))  # MATLAB negates
 
     # Round Ep component: ECHO2D stores Ep*r, divide to get physical Ep
     comp = monitor.field_component.upper()

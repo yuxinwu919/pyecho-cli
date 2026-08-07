@@ -380,18 +380,24 @@ def _collect_output(work_dir: Path, dest_dir: Path, symmetry: str) -> None:
         for f in work_dir.glob(pattern):
             dest = dest_dir / f.name
             if not dest.exists():
-                shutil.move(str(f), str(dest))
+                _shutil.move(str(f), str(dest))
     # Log files
     for f in work_dir.glob("*.log"):
         dest = dest_dir / f.name
         if not dest.exists():
-            shutil.move(str(f), str(dest))
+            _shutil.move(str(f), str(dest))
+    # Particle tracking output (particles.out, Field_XX.bin snapshots)
+    for pattern in ("particles.out", "Field_*.bin", "BeamMomentsMonitor.txt"):
+        for f in work_dir.glob(pattern):
+            dest = dest_dir / f.name
+            if not dest.exists():
+                _shutil.move(str(f), str(dest))
     # Field monitor data (if any)
     for child in work_dir.iterdir():
         if child.is_dir() and child.name.startswith("FieldMonitor"):
             dest = dest_dir / child.name
             if not dest.exists():
-                shutil.move(str(child), str(dest))
+                _shutil.move(str(child), str(dest))
 
 
 

@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import matplotlib
@@ -25,7 +26,14 @@ from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 
 from pyecho import visualize
-from pyecho.datamodel import ModeResult, RectaWakeResult, WakeResult
+from pyecho.datamodel import (
+    ModeResult,
+    MonitorData,
+    RectaWakeResult,
+    RoundWakeResult,
+    SimulationResult,
+    WakeResult,
+)
 from pyecho.errors import GeometryError
 
 
@@ -74,6 +82,59 @@ def _make_recta_result(n: int = 50) -> RectaWakeResult:
     )
 
 
+def _make_round_result(
+    n: int = 50,
+    *,
+    dipole: bool = True,
+    kick: float | None = 2.5,
+) -> RoundWakeResult:
+    s, w = _make_s_w(n)
+    return RoundWakeResult(
+        s=s,
+        Wlong=w,
+        Wdipole=0.5 * w if dipole else None,
+        loss_long=1.5,
+        kick_dipole=kick,
+        bunch=np.ones_like(s),
+        peak=float(np.max(np.abs(w))),
+        rms_spread=0.1,
+    )
+
+
+def _make_simulation_result(n: int = 50, *, processed: bool = True) -> SimulationResult:
+    mode = _make_mode_result(n)
+    if not processed:
+        mode.wake_processed = None
+    return SimulationResult(
+        modes={1: mode},
+        geometry_file="",
+        output_dir="",
+    )
+
+
+def _make_monitor(
+    nz: int = 20,
+    nr: int = 15,
+    *,
+    F: np.ndarray,
+    time_type: str = "s",
+    nt: int = 5,
+) -> MonitorData:
+    Z = np.linspace(0.0, 0.05, nz)   # m
+    R = np.linspace(0.0, 0.02, nr)   # m
+    T = np.linspace(0.0, 1e-9, nt)   # s
+    return MonitorData(
+        monitor_id=7,
+        field_component="Ez",
+        time_type=time_type,
+        T=T,
+        Z=Z,
+        R=R,
+        F=F,
+        D=0.05,
+    )
+
+
 def _make_mode_result(n: int = 50) -> ModeResult:
     s, w = _make_s_w(n)
     return ModeResult(
@@ -114,18 +175,21 @@ def synthetic_geometry(tmp_path):
     return geo
 
 
-def _write_wake_file(path, *, offset: int = 0, W: float = 0.05):
+def _write_wake_file(path, *, offset: int = 0, W: float = 0.05, zero: bool = False):
     # Header rows parsed by plot_wake_modes:
     #   lines[0] -> offset = int(float(lines[0].split()[1]))
     #   lines[1] -> W = float(lines[1].split()[0])
+    wake_rows = (
+        ["0.000 0.0", "0.001 0.0", "0.002 0.0"]
+        if zero
+        else ["0.000 1.0", "0.001 0.5", "0.002 0.25"]
+    )
     path.write_text(
         "\n".join(
             [
                 f"hr 0 {offset}",
                 f"{W:.6f} 0.001",
-                "0.000 1.0",
-                "0.001 0.5",
-                "0.002 0.25",
+                *wake_rows,
             ]
         )
         + "\n"
@@ -441,3 +505,252 @@ def test_plot_wake_round_supports_tight_layout_no_warning():
         s, w = _make_s_w()
         fig, ax = visualize.plot_wake_round(s, w)
         fig.canvas.draw()
+
+
+# ---------------------------------------------------------------------------
+# plot_round_wake
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kick", [2.5, None])
+def test_plot_round_wake_dipole_panel(kick):
+    """Two-panel figure: longitudinal + dipole, kick annotation optional."""
+    result = _make_round_result(kick=kick)
+    fig, axes = visualize.plot_round_wake(result, title="Round test")
+    assert isinstance(fig, Figure)
+    assert len(axes) == 2
+    assert axes[0].get_ylabel().startswith("Longitudinal")
+    assert axes[1].get_ylabel().startswith("Dipole")
+    # loss annotation always present on the longitudinal panel
+    assert any("Loss_long" in t.get_text() for t in axes[0].texts)
+    if kick is not None:
+        assert any("Kick_dipole" in t.get_text() for t in axes[1].texts)
+    else:
+        assert not any("Kick_dipole" in t.get_text() for t in axes[1].texts)
+    # bunch overlay auto-extracted from result.bunch -> black line on each panel
+    assert any(
+        ln.get_label() == "Bunch (Iz0)" for a in axes for ln in _labeled_lines(a)
+    )
+    assert fig._suptitle.get_text() == "Round test"
+
+
+def test_plot_round_wake_monopole_only():
+    """Wdipole=None collapses to a single panel."""
+    result = _make_round_result(dipole=False, kick=None)
+    fig, axes = visualize.plot_round_wake(result)
+    assert len(axes) == 1
+    assert axes[0].get_ylabel().startswith("Longitudinal")
+    assert axes[0].get_xlabel() == "s [mm]"
+
+
+# ---------------------------------------------------------------------------
+# plot_recta_wake — zero-bunch scaling fallback
+# ---------------------------------------------------------------------------
+
+def test_plot_recta_wake_zero_bunch_scaling():
+    """A zero bunch takes the unscaled else-branch on all three subplots."""
+    result = _make_recta_result()
+    fig, axes = visualize.plot_recta_wake(
+        result, bunch=np.zeros_like(result.s)
+    )
+    for a in axes:
+        assert len(a.lines) == 3  # wake + bunch + axhline
+
+
+# ---------------------------------------------------------------------------
+# plot_field
+# ---------------------------------------------------------------------------
+
+def test_plot_field_3d_heatmap_with_contour():
+    """3-D field monitor: slice at time_step, heatmap + contour overlay."""
+    nz, nr, nt = 20, 15, 5
+    z = np.linspace(0, np.pi, nz)
+    r = np.linspace(0, np.pi, nr)
+    F = np.array([np.outer(np.sin(z), np.cos(r)) for _ in range(nt)])
+    monitor = _make_monitor(nz=nz, nr=nr, nt=nt, F=F, time_type="s")
+    fig, ax = visualize.plot_field(monitor, time_step=1)
+    assert isinstance(fig, Figure)
+    assert isinstance(ax, Axes)
+    assert ax.get_xlabel() == "z [mm]"   # time_type == "s"
+    assert ax.get_ylabel() == "r/mm"
+    assert ax.get_title().startswith("Ez")
+    # pcolormesh + contour produce quad/line collections
+    assert len(ax.collections) >= 1
+    # the colorbar is drawn and labelled with the field component
+    assert len(fig.axes) == 2  # main axes + colorbar
+    assert fig.axes[1].get_ylabel() == "Ez"
+
+
+def test_plot_field_2d_existing_axes():
+    """2-D field (nr, nz) drawn onto user-supplied axes, lab time type."""
+    nz, nr = 20, 15
+    F = np.outer(np.linspace(0, 1, nr), np.linspace(0, 1, nz))  # (nr, nz)
+    monitor = _make_monitor(nz=nz, nr=nr, F=F, time_type="z")
+    fig, existing = plt.subplots()
+    fig2, ax = visualize.plot_field(monitor, ax=existing)
+    assert fig2 is fig
+    assert ax is existing
+    assert ax.get_xlabel() == "s [mm]"   # time_type == "z" -> s [mm]
+    assert ax.get_title().startswith("Ez")
+
+
+@pytest.mark.parametrize(
+    "F",
+    [
+        np.ones((10, 10)),  # 2-D shape matching neither grid dimension
+        np.ones(10),        # 1-D field
+    ],
+)
+def test_plot_field_fallback_line_plot(F):
+    """Mismatched field shape falls back to a plain line plot along z."""
+    monitor = _make_monitor(nz=10, nr=12, F=F, time_type="s")
+    fig, ax = visualize.plot_field(monitor)
+    assert ax.get_xlabel() == "z [mm]"
+    assert ax.get_ylabel() == "Ez"
+    assert f"Monitor {monitor.monitor_id}" in ax.get_title()
+    assert len(ax.lines) == 1
+    assert not ax.collections  # no pcolormesh / contour
+
+
+# ---------------------------------------------------------------------------
+# plot_comparison — existing axes / skipped results
+# ---------------------------------------------------------------------------
+
+def test_plot_comparison_existing_axes():
+    results = _comparison_runs()
+    fig, existing = plt.subplots()
+    fig2, ax = visualize.plot_comparison(results, ax=existing)
+    assert fig2 is fig
+    assert ax is existing
+    assert len(fig.axes) == 1
+
+
+def test_plot_comparison_skips_missing_data(caplog):
+    @dataclass
+    class Incomplete:
+        label: str  # no s / W attributes
+
+    results = [("ok",) + _make_s_w(), Incomplete("bad")]
+    # The CLI callback may have disabled propagation on the ``pyecho``
+    # logger (main_callback.py), which would keep caplog (root-attached)
+    # from seeing the warning.  Re-enable propagation for the duration of
+    # the test so it is order-independent.
+    pyecho_logger = logging.getLogger("pyecho")
+    prev_propagate = pyecho_logger.propagate
+    pyecho_logger.propagate = True
+    try:
+        with caplog.at_level(logging.WARNING, logger="pyecho.visualize"):
+            fig, ax = visualize.plot_comparison(results)
+        assert len(_labeled_lines(ax)) == 1  # only the valid run plotted
+        assert "Skipping result 1" in caplog.text
+    finally:
+        pyecho_logger.propagate = prev_propagate
+
+
+# ---------------------------------------------------------------------------
+# plot_wake_modes — existing axes / zero-wake bunch scaling
+# ---------------------------------------------------------------------------
+
+def test_plot_wake_modes_existing_axes(synthetic_wake_dir):
+    fig, existing = plt.subplots()
+    fig2, ax = visualize.plot_wake_modes(synthetic_wake_dir, ax=existing)
+    assert fig2 is fig
+    assert ax is existing
+    assert len(fig.axes) == 1
+
+
+def test_plot_wake_modes_zero_wake_scaling(tmp_path):
+    """Zero-magnitude wakes fall back to the raw (unscaled) bunch profile."""
+    _write_wake_file(tmp_path / "wakeL_01.txt", zero=True)
+    _write_wake_file(tmp_path / "wakeL_03.txt", zero=True)
+    (tmp_path / "Iz0.txt").write_text(
+        "0.000 0.0 1e-9\n0.001 0.0 1e-9\n0.002 0.0 1e-9\n"
+    )
+    fig, ax = visualize.plot_wake_modes(tmp_path)
+    labels = [ln.get_label() for ln in ax.lines]
+    assert "m=1" in labels and "m=3" in labels
+    assert "Bunch (Iz0)" in labels
+
+
+# ---------------------------------------------------------------------------
+# plot_wake_round — modes chain / zero bunch / unit auto-detect
+# ---------------------------------------------------------------------------
+
+def test_plot_wake_round_simulation_result_bunch():
+    """Bunch is auto-extracted from the first mode's wake_processed."""
+    result = _make_simulation_result()
+    fig, ax = visualize.plot_wake_round(result)
+    assert len(_labeled_lines(ax)) == 2  # wake + bunch
+
+
+def test_plot_wake_round_zero_bunch_scaling():
+    s, w = _make_s_w()
+    fig, ax = visualize.plot_wake_round(s, w, bunch=np.zeros_like(s))
+    assert len(_labeled_lines(ax)) == 2
+
+
+def test_plot_wake_round_units_detected():
+    """Non-V/pC result units update the y-axis label automatically."""
+    result = _make_wake_result()
+    result.units = "V/mm"
+    fig, ax = visualize.plot_wake_round(result)
+    assert ax.get_ylabel() == "Wake potential [V/mm]"
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def test_extract_s_w_various_types():
+    s, w = _make_s_w()
+    # raw arrays
+    s_out, w_out = visualize._extract_s_w(s, w)
+    np.testing.assert_array_equal(s_out, s)
+    np.testing.assert_array_equal(w_out, w)
+    # WakeResult
+    wk = _make_wake_result()
+    s_out, w_out = visualize._extract_s_w(wk)
+    np.testing.assert_array_equal(s_out, wk.s)
+    np.testing.assert_array_equal(w_out, wk.W)
+    # RectaWakeResult -> longitudinal component
+    rt = _make_recta_result()
+    _, w_rt = visualize._extract_s_w(rt)
+    np.testing.assert_array_equal(w_rt, rt.Wlong)
+    # ModeResult -> raw
+    md = _make_mode_result()
+    s_out, w_out = visualize._extract_s_w(md)
+    np.testing.assert_array_equal(s_out, md.s_raw)
+    np.testing.assert_array_equal(w_out, md.W_raw)
+    # SimulationResult (processed)
+    sim = _make_simulation_result()
+    first = sim.modes[1]
+    assert first.wake_processed is not None
+    s_out, w_out = visualize._extract_s_w(sim)
+    np.testing.assert_array_equal(s_out, first.wake_processed.s)
+    np.testing.assert_array_equal(w_out, first.wake_processed.W)
+    # SimulationResult (raw fallback)
+    sim_raw = _make_simulation_result(processed=False)
+    s_out, w_out = visualize._extract_s_w(sim_raw)
+    np.testing.assert_array_equal(s_out, sim_raw.modes[1].s_raw)
+    np.testing.assert_array_equal(w_out, sim_raw.modes[1].W_raw)
+    # Unsupported type
+    with pytest.raises(TypeError, match="Cannot extract s, W"):
+        visualize._extract_s_w(object())
+
+
+def test_extract_loss_various_types():
+    s, _ = _make_s_w()
+    assert visualize._extract_loss(s) is None                     # ndarray
+    assert visualize._extract_loss(_make_wake_result()) == 1.234  # loss_factor
+    assert visualize._extract_loss(_make_recta_result()) == 1.0   # loss_long
+    assert visualize._extract_loss(_make_mode_result()) == 5.0    # via wake_processed
+    assert visualize._extract_loss(_make_simulation_result()) == 5.0  # via modes
+    assert visualize._extract_loss(_make_simulation_result(processed=False)) is None
+    assert visualize._extract_loss(object()) is None
+
+
+def test_extract_units_various_types():
+    s, _ = _make_s_w()
+    assert visualize._extract_units(s) is None                        # ndarray
+    assert visualize._extract_units(_make_wake_result()) == "V/pC"    # units attr
+    assert visualize._extract_units(_make_mode_result()) == "V/pC"    # wake_processed
+    assert visualize._extract_units(object()) is None                 # nothing

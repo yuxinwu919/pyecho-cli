@@ -14,7 +14,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from typer.testing import CliRunner
 
+from pyecho.cli import app
 from pyecho.errors import PostProcessError
 from pyecho.postprocess.particles import (
     compute_beam_moments,
@@ -22,6 +24,8 @@ from pyecho.postprocess.particles import (
     convert_echo_to_astra,
     load_echo_particles,
 )
+
+runner = CliRunner()
 
 # Independent physics literals (matching the module constants) so the tests
 # are not tautological with the implementation.
@@ -519,3 +523,72 @@ class TestComputeParticleStatistics:
         stats = compute_particle_statistics(parts)
 
         assert stats == {}
+
+
+# ---------------------------------------------------------------------------
+# CLI: echo2d postprocess particles
+# ---------------------------------------------------------------------------
+
+def _cli_particle_dir(tmp_path: Path) -> Path:
+    """Write a small particles.out into tmp_path and return it."""
+    p = tmp_path / "particles.out"
+    _write_echo_particles(
+        p,
+        x=[-1e-3, 0.0, 1e-3],
+        y=[0.0, 0.0, 0.0],
+        z=[-2e-4, 0.0, 2e-4],
+        px=[1e-3, 0.0, -1e-3],
+        py=[0.0, 0.0, 0.0],
+        pz=[1.0, 1.0, 1.0],
+        q0=1e-12,
+    )
+    return tmp_path
+
+
+class TestPostprocessParticlesCLI:
+    def test_shows_statistics_table(self, tmp_path: Path) -> None:
+        _cli_particle_dir(tmp_path)
+
+        result = runner.invoke(app, ["postprocess", "particles", str(tmp_path)])
+
+        assert result.exit_code == 0, result.exception
+        assert "Particle Statistics" in result.output
+        assert "<x>" in result.output
+        assert "σ_x" in result.output
+        assert "3" in result.output  # Np
+
+    def test_emittance_option_displays_table(self, tmp_path: Path) -> None:
+        import re
+
+        _cli_particle_dir(tmp_path)
+
+        result = runner.invoke(
+            app, ["postprocess", "particles", str(tmp_path), "--emittance"]
+        )
+
+        assert result.exit_code == 0, result.exception
+        # Strip Rich ANSI colour codes — column headers are split by escapes.
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "Normalized Emittance" in clean
+        assert "ε_n (mm·mrad)" in clean
+
+    def test_plot_option_saves_png(self, tmp_path: Path) -> None:
+        import matplotlib
+        matplotlib.use("Agg")
+
+        _cli_particle_dir(tmp_path)
+
+        result = runner.invoke(
+            app, ["postprocess", "particles", str(tmp_path), "--plot"]
+        )
+
+        assert result.exit_code == 0, result.exception
+        assert "phase_space.png" in result.output
+        out = tmp_path / "processed" / "particles" / "phase_space.png"
+        assert out.is_file()
+
+    def test_missing_particles_out_is_graceful(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["postprocess", "particles", str(tmp_path)])
+
+        assert result.exit_code == 0, result.exception
+        assert "No particles.out found" in result.output

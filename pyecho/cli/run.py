@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import typer
+import yaml
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -130,12 +131,23 @@ def run_start(
         Optional[str],
         typer.Option("--exe", "-e", help="ECHO2D executable path"),
     ] = None,
+    with_particles: Annotated[
+        bool,
+        typer.Option("--with-particles", help="Enable particle tracking (ParticleMotion=1, ParticleField=1, ParticleLoss=1, DumpParticles=1)"),
+    ] = False,
 ) -> None:
     """Start an ECHO2D simulation for a run.
 
     For round geometry, runs once with magn symmetry.
     For recta geometry, runs magn then elec automatically.
     Use --symmetry to run only one of them.
+
+    \\b
+    Particle tracking (--with-particles):
+      Appends ParticleMotion=1, ParticleField=1, ParticleLoss=1 and
+      DumpParticles=1 to input_in.txt so ECHO2D tracks macro-particles
+      and dumps ``particles.out``.  Set InPartFile in input_in.txt to a
+      particle input file (or leave ``-`` for a built-in Gaussian bunch).
     """
     from pyecho.project import (
         find_project_root, load_run_meta, update_run_status, _get_workspace_root,
@@ -178,13 +190,28 @@ def run_start(
             console.print(f"[bold red]Error:[/bold red] Symmetry '{symmetry}' not in run configuration.")
             raise typer.Exit(1)
 
+    # Enable particle tracking if requested (appended once, persists)
+    if with_particles:
+        input_file = target_dir / "input_in.txt"
+        if input_file.is_file():
+            _append_particle_params(input_file)
+            console.print(
+                "  [green]✓ Particle tracking enabled:[/green] "
+                "ParticleMotion=1, ParticleField=1, ParticleLoss=1, DumpParticles=1"
+            )
+            console.print(
+                "  [dim]Note: set InPartFile=<file> in input_in.txt to load "
+                "macro-particles ('-' uses the built-in Gaussian bunch).[/dim]"
+            )
+
     console.print(
         Panel.fit(
             f"[bold]Starting run [cyan]{meta.dir_name}[/cyan][/bold]\n"
             f"  Project:  [dim]{proj_dir.name}[/dim]\n"
             f"  Type:     {meta.geometry_type}\n"
             f"  Steps:    {', '.join(sr.symmetry for sr in to_run)}\n"
-            f"  Threads:  {threads}",
+            f"  Threads:  {threads}"
+            + (f"\n  Particles: [green]tracking on[/green]" if with_particles else ""),
             title="Simulation",
         )
     )
@@ -581,38 +608,301 @@ def run_single(
 
 @run_app.command("batch")
 def run_batch(
-    config_file: Annotated[str, typer.Argument(help="Batch config (YAML/JSON)")],
-    parallel: Annotated[
+    config_file: Annotated[str, typer.Argument(help="YAML batch configuration file")],
+    project: Annotated[
+        Optional[str],
+        typer.Option("--project", "-p", help="Project name"),
+    ] = None,
+    threads: Annotated[
         int,
-        typer.Option("--parallel", "-p", help="Number of parallel runs"),
+        typer.Option("--threads", "-j", help="OpenMP threads"),
     ] = 1,
-    resume: Annotated[
+    dry_run: Annotated[
         bool,
-        typer.Option("--resume", help="Resume from previous run"),
+        typer.Option("--dry-run", help="Show planned runs without executing"),
     ] = False,
 ) -> None:
-    """Run a parameter sweep from a batch configuration file.
+    """Run a batch of simulations from a YAML configuration file.
 
-    .. note::
+    \\b
+    YAML format:
+      base: runs/001_baseline
+      runs:
+        - name: fine_mesh
+          params:
+            StepY: 0.0001
+            StepZ: 0.0001
+        - name: large_offset
+          params:
+            Offset: 50
+            BunchSigma: 0.002
 
-        This command is a **placeholder** — the batch-sweep engine has
-        not been implemented yet.  For now use ``echo2d run single``
-        inside a shell loop or a Python script that calls
-        :func:`pyecho.runner.ECHO2DRunner`.
-
-        Planned features:
-        - YAML/JSON sweep definitions
-        - Parallel execution with ``--parallel``
-        - Resume support for interrupted sweeps
+    \\b
+    Example:
+      echo2d run batch batch_config.yaml -j 4
     """
-    console.print(Panel.fit(
-        "[bold yellow]⏳  Planned feature[/bold yellow]\n\n"
-        "Batch parameter sweeps are not yet implemented.\n\n"
-        "Workaround: use a shell loop or Python script calling\n"
-        "[cyan]ECHO2DRunner[/cyan] directly.\n\n"
-        "Expected: [cyan]echo2d v0.2.0[/cyan]",
-        title="Batch Runner",
-    ))
+    from pyecho.project import (
+        _get_workspace_root,
+        create_new_run,
+        find_project_root,
+        load_run_meta,
+    )
+
+    # ── Resolve project ──────────────────────────────────────────────
+    proj_dir: Path | None = None
+    if project:
+        proj_dir = _get_workspace_root() / project
+        if not proj_dir.is_dir():
+            console.print(f"[bold red]Error:[/bold red] Project '{project}' not found.")
+            raise typer.Exit(1)
+    else:
+        proj_dir = find_project_root()
+        if proj_dir is None:
+            console.print(
+                "[bold red]Error:[/bold red] Not inside an ECHO2D project. "
+                "Use --project to specify one."
+            )
+            raise typer.Exit(1)
+
+    # ── Load & validate batch config ─────────────────────────────────
+    try:
+        cfg = _load_batch_config(Path(config_file))
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(1)
+
+    base_ref = cfg["base"]
+    runs_cfg = cfg["runs"]
+
+    # ── Resolve the base run ─────────────────────────────────────────
+    source_dir = _resolve_batch_base(base_ref, proj_dir)
+    if source_dir is None:
+        console.print(
+            f"[bold red]Error:[/bold red] Base run '{base_ref}' not found in {proj_dir}."
+        )
+        raise typer.Exit(1)
+    base_run_id = load_run_meta(source_dir).id
+
+    console.print(
+        Panel.fit(
+            f"[bold]Batch run[/bold]\n"
+            f"  Project:  [cyan]{proj_dir.name}[/cyan]\n"
+            f"  Base:     [cyan]{source_dir.name}[/cyan]\n"
+            f"  Runs:     {len(runs_cfg)}\n"
+            f"  Threads:  {threads}\n"
+            + (
+                "  Mode:     [yellow]dry-run (planned only)[/yellow]"
+                if dry_run
+                else ""
+            ),
+            title="Batch",
+        )
+    )
+
+    # ── Create, configure, and run each entry ────────────────────────
+    results: list[dict[str, Any]] = []
+    for entry in runs_cfg:
+        run_name = entry["name"]
+        params = entry["params"]
+
+        # a. Create a new run from the base
+        try:
+            run = create_new_run(proj_dir, name=run_name, from_run=base_run_id)
+        except Exception as exc:
+            console.print(f"[yellow]⚠ Skipping run '{run_name}': {exc}[/yellow]")
+            results.append(
+                {"name": run_name, "dir": "", "status": "skipped", "loss": None}
+            )
+            continue
+
+        run_dir = proj_dir / "runs" / run.dir_name
+        input_file = run_dir / "input_in.txt"
+        if not input_file.is_file():
+            console.print(f"[bold red]Error:[/bold red] No input_in.txt in {run_dir}")
+            results.append(
+                {"name": run_name, "dir": run.dir_name, "status": "failed", "loss": None}
+            )
+            continue
+
+        # b. Apply parameter overrides to input_in.txt
+        param_bad = False
+        for key, value in params.items():
+            try:
+                _set_input_param(input_file, key, str(value))
+            except ValueError as exc:
+                console.print(f"[yellow]⚠ {run.dir_name}: {exc}[/yellow]")
+                param_bad = True
+                break
+        if param_bad:
+            results.append(
+                {"name": run_name, "dir": run.dir_name, "status": "failed", "loss": None}
+            )
+            continue
+
+        param_line = ", ".join(f"{k}={v}" for k, v in params.items())
+
+        # c. Execute the run (or plan it in --dry-run)
+        if dry_run:
+            console.print(
+                f"  [dim]• planned[/dim] [cyan]{run.dir_name}[/cyan]  {param_line}"
+            )
+            results.append(
+                {"name": run_name, "dir": run.dir_name, "status": "planned", "loss": None}
+            )
+            continue
+
+        console.print(f"\n  [bold]• {run.dir_name}[/bold]  {param_line}")
+        ok = _execute_run(run_dir, threads)
+        loss = _run_loss_factor(run_dir)
+        if ok:
+            console.print(
+                "    Loss factor: "
+                + (
+                    f"[cyan]{loss:.6f} V/pC[/cyan]"
+                    if loss is not None
+                    else "[dim]—[/dim]"
+                )
+            )
+            results.append(
+                {
+                    "name": run_name,
+                    "dir": run.dir_name,
+                    "status": "completed",
+                    "loss": loss,
+                }
+            )
+        else:
+            console.print("    [red]✗ run failed[/red]")
+            results.append(
+                {"name": run_name, "dir": run.dir_name, "status": "failed", "loss": loss}
+            )
+
+    # ── Summary table ────────────────────────────────────────────────
+    table = Table(title="Batch Summary")
+    table.add_column("Run", style="cyan")
+    table.add_column("Status")
+    table.add_column("Loss [V/pC]", justify="right")
+    for r in results:
+        icon = {
+            "completed": "[green]✓[/green]",
+            "failed": "[red]✗[/red]",
+            "planned": "[dim]○[/dim]",
+            "skipped": "[yellow]⚠[/yellow]",
+        }.get(r["status"], r["status"])
+        loss = f"{r['loss']:.6f}" if r["loss"] is not None else "—"
+        table.add_row(r["name"], icon, loss)
+    console.print(table)
+
+    if dry_run:
+        console.print(
+            "\n[dim]Dry run — no simulations executed. Remove --dry-run to run.[/dim]"
+        )
+        return
+
+    completed = [r for r in results if r["status"] == "completed"]
+    failed = [r for r in results if r["status"] in ("failed", "skipped")]
+    if results and not completed:
+        console.print("\n[bold red]✗ All batch runs failed.[/bold red]")
+        raise typer.Exit(1)
+    if failed:
+        console.print(
+            f"\n[yellow]⚠ {len(failed)} of {len(results)} runs failed.[/yellow]"
+        )
+
+    console.print("\n[dim]Next: echo2d postprocess summary runs/*[/dim]")
+
+
+def _load_batch_config(config_path: Path) -> dict:
+    """Load and validate a batch-configuration YAML file.
+
+    Expected schema::
+
+        base: runs/001_baseline      # run ID or path to copy config from
+        runs:
+          - name: fine_mesh
+            params:
+              StepY: 0.0001
+
+    Returns ``{"base": str, "runs": [{"name": str, "params": dict}]}``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *config_path* does not exist.
+    ValueError
+        If the file is malformed or missing the required keys.
+    """
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Batch config not found: {config_path}")
+
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Failed to parse batch config: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError("Batch config must be a YAML mapping.")
+
+    base = data.get("base")
+    if not isinstance(base, str) or not base.strip():
+        raise ValueError("Batch config requires a 'base' run (run ID or path).")
+
+    runs = data.get("runs")
+    if not isinstance(runs, list) or not runs:
+        raise ValueError("Batch config requires a non-empty 'runs' list.")
+
+    parsed: list[dict[str, Any]] = []
+    for i, entry in enumerate(runs, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Batch runs entry #{i} must be a mapping.")
+        name = entry.get("name")
+        params = entry.get("params", {})
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Batch runs entry #{i} requires a 'name'.")
+        if not isinstance(params, dict):
+            raise ValueError(f"Batch runs entry '{name}' requires a 'params' mapping.")
+        parsed.append({"name": name, "params": params})
+
+    return {"base": base.strip(), "runs": parsed}
+
+
+def _resolve_batch_base(base_ref: str, proj_dir: Path) -> Path | None:
+    """Resolve a batch ``base`` reference to a run directory.
+
+    Accepts an absolute path, a path relative to the project root
+    (e.g. ``runs/001_baseline``), or a run ID / directory-name prefix
+    (e.g. ``001``).  Returns ``None`` if no run matches.
+    """
+    ref = Path(base_ref)
+    if ref.is_absolute():
+        return ref.resolve() if ref.is_dir() else None
+
+    from_project = proj_dir / base_ref
+    if from_project.is_dir():
+        return from_project.resolve()
+
+    runs_dir = proj_dir / "runs"
+    if runs_dir.is_dir():
+        key = ref.name
+        for child in sorted(runs_dir.iterdir()):
+            if child.is_dir() and child.name.startswith(key):
+                return child
+    return None
+
+
+def _run_loss_factor(run_dir: Path) -> float | None:
+    """Best-effort longitudinal loss factor [V/pC] for *run_dir*.
+
+    Returns ``None`` when the wake cannot be post-processed (e.g. no
+    ECHO2D output was produced).
+    """
+    try:
+        from pyecho.api import quick_postprocess
+
+        wake = quick_postprocess(str(run_dir))
+        return float(wake.loss_long)
+    except Exception:
+        return None
 
 
 @run_app.command("converge")
@@ -762,6 +1052,48 @@ def _set_input_param(input_file: Path, param: str, value: str) -> None:
     if updated == text:
         raise ValueError(f"Parameter '{param}' not found in {input_file}")
     input_file.write_text(updated, encoding="utf-8")
+
+
+def _append_particle_params(input_file: Path) -> bool:
+    """Force ECHO2D particle-tracking switches to ``1`` in ``input_in.txt``.
+
+    Sets ``ParticleMotion``, ``ParticleField``, ``ParticleLoss`` and
+    ``DumpParticles`` to ``1``.  Existing occurrences are edited in place;
+    missing ones are appended.  Templates ship these keys defaulted to
+    ``0``, so a plain "append if missing" would be a no-op.
+
+    Returns ``True`` if any change was made, ``False`` if the file already
+    carried all four switches set to ``1``.
+    """
+    additions = (
+        "ParticleMotion=1",
+        "ParticleField=1",
+        "ParticleLoss=1",
+        "DumpParticles=1",
+    )
+    changed = False
+    for line in additions:
+        key = line.split("=")[0]
+        text = input_file.read_text(encoding="utf-8")
+        match = re.search(
+            rf"^{re.escape(key)}\s*=\s*(\S*)", text, re.MULTILINE
+        )
+        if match is None:
+            # Key absent — append at the end of the file.
+            input_file.write_text(text.rstrip("\n") + "\n" + line + "\n", encoding="utf-8")
+            changed = True
+        elif match.group(1) != "1":
+            # Key present with a different value — edit in place.
+            updated = re.sub(
+                rf"^{re.escape(key)}\s*=\s*\S*",
+                line,
+                text,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            input_file.write_text(updated, encoding="utf-8")
+            changed = True
+    return changed
 
 
 def _geometry_file_in_run(run_dir: Path) -> Path:
