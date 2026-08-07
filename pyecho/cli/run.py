@@ -109,7 +109,10 @@ def run_new(
 def run_start(
     run_id: Annotated[
         Optional[str],
-        typer.Argument(help="Run ID to execute (default: latest in current project)"),
+        typer.Argument(
+            help="Run ID to execute (default: latest in current project)",
+            autocompletion=lambda: _get_run_ids(),
+        ),
     ] = None,
     symmetry: Annotated[
         Optional[str],
@@ -351,7 +354,13 @@ def run_list(
 @run_app.command("info")
 def run_info(
     ctx: typer.Context,
-    run_id: Annotated[str, typer.Argument(help="Run ID (e.g. 001)")],
+    run_id: Annotated[
+        str,
+        typer.Argument(
+            help="Run ID (e.g. 001)",
+            autocompletion=lambda: _get_run_ids(),
+        ),
+    ],
     project: Annotated[
         Optional[str],
         typer.Option("--project", "-p", help="Project name"),

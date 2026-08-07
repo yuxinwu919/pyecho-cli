@@ -33,6 +33,44 @@ def _get_template_names() -> list[str]:
     from pyecho.config import ECHO2DParams
     return ECHO2DParams.list_templates()
 
+
+def _get_project_names() -> list[str]:
+    """Return workspace project names for CLI autocompletion."""
+    try:
+        from pyecho.project import _get_workspace_root, scan_workspace
+        return sorted(scan_workspace(_get_workspace_root()).keys())
+    except Exception:
+        return []
+
+
+def _get_run_ids() -> list[str]:
+    """Return run directory IDs from the current project for CLI autocompletion."""
+    try:
+        from pathlib import Path
+        cwd = Path.cwd()
+        runs_dir = cwd / "runs"
+        if runs_dir.is_dir():
+            return sorted(
+                d.name for d in runs_dir.iterdir()
+                if d.is_dir() and (d / ".run.yaml").is_file()
+            )
+        # Walk up to find project root
+        for _ in range(10):
+            if (cwd / ".echo2d.yaml").is_file():
+                runs_dir = cwd / "runs"
+                if runs_dir.is_dir():
+                    return sorted(
+                        d.name for d in runs_dir.iterdir()
+                        if d.is_dir() and (d / ".run.yaml").is_file()
+                    )
+            parent = cwd.parent
+            if parent == cwd:
+                break
+            cwd = parent
+        return []
+    except Exception:
+        return []
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
