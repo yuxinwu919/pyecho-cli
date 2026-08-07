@@ -39,7 +39,8 @@ Homepage = "https://echo4d.de"
 Repository = "https://github.com/echo4d/echo2d"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "pyqtgraph>=0.13", "PySide2>=5.15"]
+interactive = ["pyqtgraph>=0.13", "PySide2>=5.15"]
 
 [project.scripts]
 echo2d = "pyecho.cli:app"

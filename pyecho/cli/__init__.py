@@ -80,6 +80,33 @@ from pyecho.cli._examples import (  # noqa: E402
     _print_example_summary,
 )
 
+
+# ---------------------------------------------------------------------------
+# Backend dispatcher — subcommands call this to get the right plot function
+# ---------------------------------------------------------------------------
+
+def _get_plot_backend(ctx):
+    """Return ``"pyqtgraph"`` or ``"matplotlib"`` from the Typer context.
+
+    Falls back to matplotlib if pyqtgraph was requested but isn't installed.
+    """
+    import typer as _typer
+
+    ctx_obj: dict = getattr(ctx, "obj", None) or {}
+    backend: str = ctx_obj.get("backend", "pyqtgraph")
+
+    if backend == "pyqtgraph":
+        try:
+            import pyqtgraph  # noqa: F401
+        except ImportError:
+            console.print(
+                "[yellow]pyqtgraph not installed; falling back to matplotlib.[/yellow]\n"
+                "[dim]Install with: pip install pyqtgraph PySide2[/dim]"
+            )
+            return "matplotlib"
+    return backend
+
+
 # ---------------------------------------------------------------------------
 # Import command modules to register commands on sub-apps
 # ---------------------------------------------------------------------------

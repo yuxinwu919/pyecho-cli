@@ -11,6 +11,7 @@ from pyecho.cli import visualize_app, console
 
 @visualize_app.command("wake")
 def visualize_wake(
+    ctx: typer.Context,
     wake_file: Annotated[str, typer.Argument(help="Wake file path")],
     bunch_file: Annotated[
         Optional[str],
@@ -26,14 +27,17 @@ def visualize_wake(
     ] = False,
 ) -> None:
     """Visualize wake potential from a wakeL file."""
+    from pyecho.cli import _get_plot_backend
     from pyecho.parser import parse_wake_file
-    from pyecho.visualize import plot_wake_round
 
     try:
         parsed = parse_wake_file(wake_file)
     except Exception as exc:
         console.print(f"[bold red]Error:[/bold red] Failed to parse wake file: {exc}")
         raise typer.Exit(1)
+
+    s = parsed["s"]
+    W = parsed["W_raw"] * 1e-3  # V/pC
 
     bunch = None
     if bunch_file:
@@ -42,24 +46,37 @@ def visualize_wake(
         except Exception as exc:
             console.print(f"[yellow]Warning:[/yellow] Could not load bunch file: {exc}")
 
-    s = parsed["s"]
-    W = parsed["W_raw"] * 1e-3  # Convert to V/pC
+    backend = _get_plot_backend(ctx)
 
+    if backend == "pyqtgraph":
+        from pyecho.visualize_interactive import plot_wake_interactive
+        console.print(
+            f"[green]Mode {parsed['mode']}: "
+            f"hr={parsed['hr']:.2e}, D={parsed['D']:.3f}, σ={parsed['sigma']:.4f}[/green]"
+        )
+        if output:
+            console.print("[yellow]--output is ignored in interactive mode[/yellow]")
+        plot_wake_interactive(
+            s, W,
+            title=f"Wake Potential — Mode {parsed['mode']}",
+            bunch_s=bunch[:, 0] if bunch is not None else None,
+            bunch_profile=bunch[:, 1] if bunch is not None else None,
+        )
+        return
+
+    # matplotlib fallback
+    from pyecho.visualize import plot_wake_round
     fig, ax = plot_wake_round(
-        s, W,
-        bunch=bunch,
+        s, W, bunch=bunch,
         title=f"Wake Potential — Mode {parsed['mode']}",
     )
-
     console.print(
         f"[green]Mode {parsed['mode']}: "
         f"hr={parsed['hr']:.2e}, D={parsed['D']:.3f}, σ={parsed['sigma']:.4f}[/green]"
     )
-
     if output:
         fig.savefig(output, dpi=150, bbox_inches="tight")
         console.print(f"[green]Plot saved to {output}[/green]")
-
     if not no_show:
         import matplotlib.pyplot as plt
         plt.show()

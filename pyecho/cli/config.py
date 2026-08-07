@@ -344,6 +344,69 @@ def config_validate_bunch(
         raise typer.Exit(1)
 
 
+# ---------------------------------------------------------------------------
+# User settings (persistent config)
+# ---------------------------------------------------------------------------
+
+_SETTINGS_HELP = {
+    "backend": "Plotting backend: pyqtgraph (interactive Qt window) or matplotlib (static plots).",
+}
+
+
+@config_app.command("set")
+def config_set(
+    key: Annotated[str, typer.Argument(help="Setting name (e.g. backend)")],
+    value: Annotated[str, typer.Argument(help="Setting value")],
+) -> None:
+    """Persist a user preference (stored in ~/.echo2d/config.yaml).
+
+    Currently supported settings:
+
+    \b
+      backend  — pyqtgraph or matplotlib
+
+    \b
+    Examples:
+      echo2d config set backend pyqtgraph
+      echo2d config set backend matplotlib
+    """
+    from pyecho.user_config import set_ as _set, _DEFAULTS
+
+    if key not in _DEFAULTS:
+        console.print(f"[red]Unknown setting '{key}'. Supported: {', '.join(_DEFAULTS)}[/red]")
+        raise typer.Exit(1)
+
+    if key == "backend" and value not in ("pyqtgraph", "matplotlib"):
+        console.print(f"[red]backend must be 'pyqtgraph' or 'matplotlib', got '{value}'[/red]")
+        raise typer.Exit(1)
+
+    _set(key, value)
+    console.print(f"[green]✓[/green] {key} = [cyan]{value}[/cyan]")
+
+
+@config_app.command("get")
+def config_get(
+    key: Annotated[Optional[str], typer.Argument(help="Setting name (leave empty to list all)")] = None,
+) -> None:
+    """Display current user preferences."""
+    from pyecho.user_config import load, _DEFAULTS
+
+    if key:
+        if key not in _DEFAULTS:
+            console.print(f"[red]Unknown setting '{key}'. Supported: {', '.join(_DEFAULTS)}[/red]")
+            raise typer.Exit(1)
+        console.print(f"[cyan]{key}[/cyan] = [green]{load()[key]}[/green]")
+    else:
+        config = load()
+        table = Table(title="User Settings (~/.echo2d/config.yaml)")
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_column("Description", style="dim")
+        for k in _DEFAULTS:
+            table.add_row(k, str(config[k]), _SETTINGS_HELP.get(k, ""))
+        console.print(table)
+
+
 # ===================================================================
 # run commands
 # ===================================================================

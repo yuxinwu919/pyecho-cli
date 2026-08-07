@@ -25,6 +25,10 @@ def main_callback(
         bool,
         typer.Option("--verbose", "-v", help="Verbose output (DEBUG level logging)"),
     ] = False,
+    backend: Annotated[
+        str,
+        typer.Option("--backend", "-b", help="Plotting backend: pyqtgraph (default) or matplotlib"),
+    ] = "pyqtgraph",
     version: Annotated[
         bool,
         typer.Option("--version", help="Show version and exit"),
@@ -113,9 +117,20 @@ def main_callback(
     # Store in context for subcommands.  Subcommands that support
     # structured output read ctx.obj["json"] to decide between Rich
     # rendering and plain JSON on stdout.
+    # Read user config for defaults — CLI flags take precedence
+    try:
+        from pyecho.user_config import get as _config_get
+    except Exception:
+        _config_get = lambda k: None  # noqa: E731
+
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     ctx.obj["json"] = json_output
+
+    # Backend: CLI flag > user config > default (pyqtgraph)
+    if ctx.params.get("backend") is None:
+        backend = _config_get("backend") or "pyqtgraph"
+    ctx.obj["backend"] = backend
 
 
 # ===================================================================
