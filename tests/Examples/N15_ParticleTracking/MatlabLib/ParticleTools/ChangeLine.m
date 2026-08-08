@@ -1,0 +1,19 @@
+function ChangeLine(taskfile,parameter,svalue)
+    global OS_LINUX
+    tfile='mytempfile.txt';
+    fin=fopen(taskfile,'rt');
+    fout=fopen(tfile,'wt');
+    while feof(fin) == 0,
+       sline = fgets(fin);
+       k=strfind(sline,parameter);
+       if length(k)==0, 
+       else
+            sline=[sprintf('%s\n',svalue )] ;
+       end;
+       fprintf(fout,'%s',sline);
+    end;
+    fclose(fout);
+    fclose(fin);
+    if OS_LINUX, cmd='mv', else cmd='move'; end;
+    system([cmd ' ' tfile ' ' taskfile]);
+

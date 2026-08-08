@@ -1,0 +1,20 @@
+id: '016'
+name: slacdechirper
+schema_version: 1
+created: '2026-08-08T16:24:01.661476'
+geometry_type: recta
+status: pending
+sub_runs:
+- symmetry: magn
+  status: pending
+  duration_s: 0.0
+  output_dir: magn/
+- symmetry: elec
+  status: pending
+  duration_s: 0.0
+  output_dir: elec/
+processed:
+  loss_long_VpC: null
+  kick_quad_VpCmm: null
+  kick_dipole_VpCmm: null
+  peak_VpC: null

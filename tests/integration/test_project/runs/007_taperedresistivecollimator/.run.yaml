@@ -1,0 +1,20 @@
+id: '007'
+name: taperedresistivecollimator
+schema_version: 1
+created: '2026-08-08T16:24:01.639928'
+geometry_type: recta
+status: pending
+sub_runs:
+- symmetry: magn
+  status: pending
+  duration_s: 0.0
+  output_dir: magn/
+- symmetry: elec
+  status: pending
+  duration_s: 0.0
+  output_dir: elec/
+processed:
+  loss_long_VpC: 0.0025814218445363297
+  kick_quad_VpCmm: -0.003735431759365716
+  kick_dipole_VpCmm: -0.0
+  peak_VpC: null

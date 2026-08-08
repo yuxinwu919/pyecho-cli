@@ -1,0 +1,48 @@
+%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
+
+GeometryFile=dechip.txt
+Units=cm	% -m/cm/mm
+GeometryType=recta	 % recta / round
+Width=0.05	% in meters
+SymmetryCondition=magn	 % magn/elec
+Convex=1
+
+%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%
+
+InPartFile=-
+BunchSigma=0.0005
+Offset=-1
+InjectionTimeStep=0
+
+%%%%%%%%%%%%%%  field %%%%%%%%%%%%%%%%%%%%%%
+
+InFieldDir=-
+PortDir=-
+PortPosition=-1
+
+%%%%%%%%%%%%%% model %%%%%%%%%%%%%%%%%%%%%%%
+
+WakeIntMethod=ind
+Modes=1 3 5 7 9 11 13 15 17 19 21 23 25 27 29 
+ParticleMotion=0
+ParticleField=1
+CurrentFilter=0
+ParticleLoss=0
+
+%%%%%%%%%%%%%% mesh %%%%%%%%%%%%%%%%%%%%%%%
+
+MeshLength=200
+StartPosition=0
+TimeSteps=-1
+StepY=0.0001
+StepZ=0.0001
+NStepsInConductive=0
+AdjustMesh=0
+MeshMotionFile=-
+
+%%%%%%%%%%%%%% monitors %%%%%%%%%%%%%%%%%%%%%%%
+
+DumpField=0
+DumpParticles=0
+DumpCurrent=0
+DumpMesh=0

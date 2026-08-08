@@ -1,0 +1,48 @@
+%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
+
+GeometryFile=PipeCondLayer_100cm.txt
+Units=mm	% -m/cm/mm
+GeometryType=recta	 % recta / round
+Width=0.08	% in meters
+SymmetryCondition=elec	 % magn/elec
+Convex=0
+
+%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%
+
+InPartFile=-
+BunchSigma=0.00025
+Offset=90
+InjectionTimeStep=0
+
+%%%%%%%%%%%%%%  field %%%%%%%%%%%%%%%%%%%%%%
+
+InFieldDir=-
+PortDir=-
+PortPosition=-1
+
+%%%%%%%%%%%%%% model %%%%%%%%%%%%%%%%%%%%%%%
+
+WakeIntMethod=dir
+Modes=1 3 5 
+ParticleMotion=0
+ParticleField=1
+CurrentFilter=0
+ParticleLoss=0
+
+%%%%%%%%%%%%%% mesh %%%%%%%%%%%%%%%%%%%%%%%
+
+MeshLength=52
+StartPosition=0
+TimeSteps=-1
+StepY=5e-05
+StepZ=5e-05
+NStepsInConductive=0
+AdjustMesh=0
+MeshMotionFile=-
+
+%%%%%%%%%%%%%% monitors %%%%%%%%%%%%%%%%%%%%%%%
+
+DumpField=0
+DumpParticles=0
+DumpCurrent=0
+DumpMesh=0

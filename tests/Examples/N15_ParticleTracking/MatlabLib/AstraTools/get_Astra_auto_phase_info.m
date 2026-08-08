@@ -1,0 +1,24 @@
+function cavity_auto_phase = get_Astra_auto_phase_info(Astra_output)
+% create table with auto-phasing info from Astra_output
+
+f_in=fopen(Astra_output);
+nend=0; nnend=0;
+
+cavity_auto_phase(1,1)=0.0;
+cavity_auto_phase(1,2)=0.0;
+cavity_auto_phase(1,3)=0;
+
+while 1
+    card=fgetl(f_in);
+    if ~ischar(card), break, end
+    if length(strfind(card,'Cavity phasing completed:'))>0, nnend=1; end
+    nend=nend+nnend;
+    if nend>2
+        if length(strfind(card,'----------------'))>0, break, end
+        ix=sscanf(card,'%d %f %f');
+        cavity_auto_phase(ix(1),1)=ix(2);
+        cavity_auto_phase(ix(1),2)=ix(3);
+        cavity_auto_phase(ix(1),3)=1;
+    end
+end
+fclose(f_in);

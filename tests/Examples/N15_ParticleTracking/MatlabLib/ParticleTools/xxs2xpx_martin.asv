@@ -1,0 +1,12 @@
+function xpx=xxs2xpx_martin(xxs,Eref)
+PhysConsts_martin;
+xps=xxs;
+h=Eref/E_ele_eV;
+for n=1:Np
+    pz=E_ele_eV*sqrt( (((1+xxs(n,6))*h)^2-1)/...
+                      (1+xxs(n,4)*xxs(n,4)+xxs(n,5)*xxs(n,4)) );
+    xpx(n,4)=xxs(n,4)*pz;
+    xpx(n,5)=xxs(n,5)*pz;
+    xpx(n,6)=pz
+end
+

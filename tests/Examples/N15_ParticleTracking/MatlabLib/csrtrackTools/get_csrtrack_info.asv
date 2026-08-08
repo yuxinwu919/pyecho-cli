@@ -1,0 +1,43 @@
+function [z_csr_zero,...
+          csrtrack_vertical,...
+          name_of_in_solution,...
+          name_of_out_solution...
+         ]=get_csrtrack_info()
+% read csrtrk.in, get info lines and info
+z_csr_zero=0;
+csrtrack_vertical='astra_vertical';
+name_of_in_solution='undefined';
+name_of_out_solution='undefined';
+f_in=fopen('csrtrk.in','rt');
+L1=false; L2=false;
+while feof(f_in)==0
+  line=fgetl(f_in);
+  if length(strfind(line,'!'))>0
+    mm=strfind(line,'!');m=mm(1);
+    if length(line)>m
+      line=line(m+1:length(line));
+      L2=L2|length(strfind(line,'end of info for s2-calculations'))>0;
+      if L1&~L2
+        fprintf(1,'%s\n',line);
+        if length(strfind(line,'csrtrack_lo_co_origin'))>0
+          mm=strfind(line,'=');line(1:mm(1))=' ';
+          z_csr_zero=sscanf(line,'%f');
+        end
+        if length(strfind(line,'csrtrack_in_distribution'))>0
+          mm=strfind(line,'=');line(1:mm(1))=' ';mmax=length(line);
+          m1=1;while (line(m1:m1)==' ')&(m1<mmax),m1=m1+1; end
+          m2=m1+1;while (line(m2:m2)~=' ')&(m2<mmax),m2=m2+1; end
+          if m2<=mmax, name_of_in_solution=line(m1:m2); end
+        end
+        if length(strfind(line,'csrtrack_out_distribution'))>0
+          mm=strfind(line,'=');line(1:mm(1))=' ';mmax=length(line);
+          m1=1;while (line(m1:m1)==' ')&(m1<mmax),m1=m1+1; end
+          m2=m1+1;while (line(m2:m2)~=' ')&(m2<mmax),m2=m2+1; end
+          if m2<=mmax, name_of_out_solution=line(m1:m2); end
+        end
+      end
+      L1=L1|length(strfind(line,'start of info for s2-calculations'))>0;
+    end
+  end
+end
+fclose(f_in);

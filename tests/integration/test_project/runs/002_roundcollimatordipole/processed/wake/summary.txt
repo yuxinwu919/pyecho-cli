@@ -1,0 +1,9 @@
+Geometry: round
+
+[Monopole (m=0)] — longitudinal wake potential
+  Loss_long:  0.000000 V/pC
+  Peak:       0.0000 V/pC
+  RMS spread: 0.0000 V/pC
+
+[Dipole (m=1)] — modal coefficient
+  Kick_dipole: -0.0000 V/pC/m

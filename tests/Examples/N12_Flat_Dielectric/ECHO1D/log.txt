@@ -1,0 +1,22 @@
+%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
+Geometry_File=Example02.txt
+Boundary_Condition=PEC	%PEC/Open
+Geometry_Width=0.16	% in meters/0-round
+
+%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%
+Gamma=1000
+
+%%%%%%%%%%%%%%  model %%%%%%%%%%%%%%%%%%%%%%
+Method=FM
+Steps_on_Wavelength=100
+
+%%%%%%%%%%%%%% output %%%%%%%%%%%%%%%%%%%%%%%
+Modes=1 3 5 7 9 11 13 15 17 19 21 23 25 27 29 31 33 35 37 39 41 43 45 47 49 51 53 55 57 59 
+Wavenumbers=1 	20000 	1 
+
+
+ECHO1D, version 1.0.040318(March 2018)
+Author: Igor Zagorodnov (izagorodnov@gmail.com)
+Web: www.echo4d.de
+Field matching method
+CPU time used:13.706

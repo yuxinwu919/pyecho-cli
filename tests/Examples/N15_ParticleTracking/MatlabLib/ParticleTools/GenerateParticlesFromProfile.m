@@ -1,0 +1,10 @@
+function y=GenerateParticlesFromProfile(sI,I,N)
+dy=sI(2)-sI(1);
+Norm=sum(I)*dy;
+I=I/Norm;
+F=Int1(sI,I);
+[F ind]=unique(F);
+s=sI(ind);
+dx=1/N;
+x=[1:N]*dx-dx/2;
+y=interp1(F,s,x);

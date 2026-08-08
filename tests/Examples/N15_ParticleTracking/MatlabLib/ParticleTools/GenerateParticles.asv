@@ -1,0 +1,11 @@
+function PD=GenerateParticles(N,tp,bound)
+% PD=GenerateParticles2D(N,sigmaz,sigmaE,keyz,keyE)
+
+sqrt2=sqrt(2);
+quant=(1+erf(-bound/sqrt2))/2;
+n=length(tp);
+PD(1:N,n)=rand(N,n);
+for i=1:n,
+ if tp(i)=='g',  PD(:,i)=( PD(:,i)-0.5)*(1-2*quant)+0.5; PD(:,i)=sqrt2*erfinv(2*PD(:,i)-1); end;
+end;    
+

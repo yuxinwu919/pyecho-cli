@@ -1,0 +1,20 @@
+id: '012'
+name: flat_dielectric
+schema_version: 1
+created: '2026-08-08T16:24:01.646292'
+geometry_type: recta
+status: pending
+sub_runs:
+- symmetry: magn
+  status: pending
+  duration_s: 0.0
+  output_dir: magn/
+- symmetry: elec
+  status: pending
+  duration_s: 0.0
+  output_dir: elec/
+processed:
+  loss_long_VpC: 0.5138808946999938
+  kick_quad_VpCmm: -0.0054688201910849605
+  kick_dipole_VpCmm: -0.0069523858734683655
+  peak_VpC: null

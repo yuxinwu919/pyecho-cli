@@ -1,0 +1,11 @@
+clear all; close all;
+subplot(2,1,1);
+w1=load('../ECHO2D/round_1/wakeL_dipole.dat');
+w2=load('../ECHO2D/round_2/wakeL_dipole.dat');
+w3=load('../ECHO2D/round_all/wakeL_dipole.dat');
+plot(w1(:,1),w1(:,2)+w2(:,2),w3(:,1),w3(:,2));
+subplot(2,1,2);
+w1=load('../ECHO2D/round_1/wakeT_dipole.dat');
+w2=load('../ECHO2D/round_2/wakeT_dipole.dat');
+w3=load('../ECHO2D/round_all/wakeT_dipole.dat');
+plot(w1(:,1),w1(:,2)+w2(:,2),w3(:,1),w3(:,2));

@@ -1,0 +1,48 @@
+%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
+
+GeometryFile=tesla9.txt
+Units=cm	% -m/cm/mm
+GeometryType=round	 % recta / round
+Width=0	% in meters
+SymmetryCondition=magn	 % magn/elec
+Convex=1
+
+%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%
+
+InPartFile=-
+BunchSigma=0.001
+Offset=173
+InjectionTimeStep=0
+
+%%%%%%%%%%%%%%  field %%%%%%%%%%%%%%%%%%%%%%
+
+InFieldDir=-
+PortDir=-
+PortPosition=-1
+
+%%%%%%%%%%%%%% model %%%%%%%%%%%%%%%%%%%%%%%
+
+WakeIntMethod=ind
+Modes=0 1 
+ParticleMotion=0
+ParticleField=1
+CurrentFilter=0
+ParticleLoss=0
+
+%%%%%%%%%%%%%% mesh %%%%%%%%%%%%%%%%%%%%%%%
+
+MeshLength=52
+StartPosition=0
+TimeSteps=-1
+StepY=0.00019943
+StepZ=0.0002
+NStepsInConductive=0
+AdjustMesh=0
+MeshMotionFile=-
+
+%%%%%%%%%%%%%% monitors %%%%%%%%%%%%%%%%%%%%%%%
+
+DumpField=0
+DumpParticles=0
+DumpCurrent=0
+DumpMesh=0

@@ -1,0 +1,26 @@
+=== RUN 001_roundcollimatorlong ===
+run=001_roundcollimatorlong exit=0 time=0s new_files=6
+last_line: Ready!
+---
+  exit=0 time=0s new_files=6
+=== RUN 002_roundcollimatordipole ===
+run=002_roundcollimatordipole exit=0 time=0s new_files=6
+last_line: Ready!
+---
+  exit=0 time=0s new_files=6
+=== RUN 003_roundcollimatordipoleconductive ===
+run=003_roundcollimatordipoleconductive exit=0 time=1s new_files=7
+last_line: Ready!
+---
+  exit=0 time=1s new_files=7
+=== RUN 004_flatabsorberlongquad ===
+run=004_flatabsorberlongquad exit=0 time=0s new_files=13
+last_line: Ready!
+---
+  exit=0 time=0s new_files=13
+=== RUN 005_flatabsorberdipole ===
+run=005_flatabsorberdipole exit=0 time=0s new_files=13
+last_line: Ready!
+---
+  exit=0 time=0s new_files=13
+=== RUN 006_pohangdechirper ===

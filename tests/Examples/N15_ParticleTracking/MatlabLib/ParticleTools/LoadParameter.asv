@@ -1,0 +1,12 @@
+function svalue=LoadParameter(taskfile,parameter)
+    fin=fopen(taskfile,'rt');
+    while feof(fin) == 0,
+       line = fgets(fin);
+       k=strfind(line,parameter);
+       if length(k)==0, k=0; end;
+       if k(1)== 1,
+            line=sprintf('%s= %s\n',parameter,svalue ) ;
+       end;
+    end;
+    fclose(fin);
+    

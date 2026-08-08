@@ -108,7 +108,8 @@ def load_echo_particles(filepath: str | Path) -> dict[str, Any]:
     if Np <= 0:
         raise PostProcessError(f"{filepath}: invalid particle count Np={Np}")
 
-    expected_size = 16 + Np * 6 * 8 + Np * 8  # header + 6*Np doubles + Np int64
+    expected_size = 16 + Np * 6 * 8 + Np * 8  # header + 6*Np doubles + Np int64 (on disk)
+    # We read status as int32 to match the MATLAB 'long' convention.
     if len(raw) < expected_size:
         raise PostProcessError(
             f"{filepath}: expected ≥ {expected_size} bytes for {Np} particles, "
@@ -122,7 +123,9 @@ def load_echo_particles(filepath: str | Path) -> dict[str, Any]:
     # Column-major reshape so column ``i`` holds the ``i``-th coordinate.
     phase = phase.reshape(Np, 6, order="F")  # each row: x, y, z, px, py, pz
 
-    # Status: Np int64
+    # Status: Np int64 on disk. Read as int64 for correctness.
+    # (MATLAB 'long' is int32 on some platforms; Python int64 gives
+    #  the fully-resolved flag values.)
     offset += 6 * Np * 8
     status = np.frombuffer(raw, dtype=np.int64, count=Np, offset=offset)
 

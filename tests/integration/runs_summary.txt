@@ -1,0 +1,5 @@
+001_roundcollimatorlong | exit=0 | files=6 | time=0s
+002_roundcollimatordipole | exit=0 | files=6 | time=0s
+003_roundcollimatordipoleconductive | exit=0 | files=7 | time=1s
+004_flatabsorberlongquad | exit=0 | files=13 | time=0s
+005_flatabsorberdipole | exit=0 | files=13 | time=0s

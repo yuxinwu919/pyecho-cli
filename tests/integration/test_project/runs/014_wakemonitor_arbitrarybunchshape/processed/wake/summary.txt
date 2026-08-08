@@ -1,0 +1,6 @@
+Geometry: round
+
+[Monopole (m=0)] — longitudinal wake potential
+  Loss_long:  0.945258 V/pC
+  Peak:       2.6564 V/pC
+  RMS spread: 0.2521 V/pC

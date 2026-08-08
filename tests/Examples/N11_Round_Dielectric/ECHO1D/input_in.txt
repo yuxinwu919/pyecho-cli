@@ -1,0 +1,19 @@
+%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
+Geometry_File = Example01.txt
+Boundary_Condition = PEC
+Geometry_Width = 0
+
+%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%
+Gamma = 1000
+
+%%%%%%%%%%%%%% Model %%%%%%%%%%%%%%%%%%%%
+Method = FM
+Steps_on_Wavelength = 100
+
+%%%%%%%%%%%%%% output %%%%%%%%%%%%%%%%%%%%
+Modes = 0 1
+Wavenumbers = 1 20000 1
+
+
+
+

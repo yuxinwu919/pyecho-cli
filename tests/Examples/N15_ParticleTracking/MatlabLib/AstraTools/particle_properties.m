@@ -1,0 +1,14 @@
+function [delta,av,rms,xN_len]=particle_properties(PD,xN)
+%function []=particle_properties(PD)
+for i=1:3
+  delta(i)=max(PD(:,i))-min(PD(:,i));
+  av(i)=mean(PD(:,i));
+  rms(i)=std(PD(:,i));
+end
+Z=sort(PD(:,3))-av(3);
+N=length(Z);
+M=ceil(xN*N);
+for i=1:N-M
+  DZM(i)=Z(i+M)-Z(i);
+end
+xN_len=min(DZM);

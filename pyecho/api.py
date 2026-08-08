@@ -269,7 +269,33 @@ def _postprocess_round(
     available_modes = sorted(all_wakes.keys())
 
     # Monopole (m=0) — longitudinal wake potential
-    mono = pp.process_wake_monopole()
+    mono = None
+    if 0 in available_modes:
+        mono = pp.process_wake_monopole()
+    else:
+        logger.warning(
+            "Mode 0 (monopole) not found; only modes %s are available. "
+            "Dipole-only processing will be performed.",
+            available_modes,
+        )
+        # Create a minimal mono result from mode 1 for display consistency
+        # (WakeResult expects s, Wlong, etc.)
+        # Build a minimal WakeResult from the first available mode
+        import numpy as np
+        m0 = available_modes[0]
+        s0, W0, _, _, _, _ = all_wakes[m0]
+        from pyecho.datamodel import WakeResult
+        W_scaled = W0 * 1e-3  # V/nC → V/pC
+        mono = WakeResult(
+            s=s0,
+            W=W_scaled,
+            bunch=np.zeros_like(s0),
+            loss_factor=0.0,
+            rms_spread=0.0,
+            peak=float(np.max(np.abs(W_scaled))),
+            label=f"Mode {m0}",
+            units="V/pC",
+        )
 
     Wdipole = None
     kick_dipole = None

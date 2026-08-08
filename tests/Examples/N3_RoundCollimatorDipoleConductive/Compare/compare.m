@@ -1,0 +1,13 @@
+clear all; close all;
+w2=load('../ECHOz2/wakeL.dat');
+w3=load('../ECHO2D/round/wakeL_dipole.dat');
+subplot(2,1,1);
+plot(w2(2:end,1),w2(2:end,2),w3(3:end,1),w3(3:end,2));
+title('Longitudinal wake');
+xlabel('s[cm]');ylabel('W_|_|[V/pC/m^2]');
+w2=load('../ECHOz2/wakeT.dat');
+w3=load('../ECHO2D/round/wakeT_dipole.dat');
+subplot(2,1,2);
+plot(w2(2:end,1),w2(2:end,2),w3(3:end,1),w3(3:end,2));
+title('Transverse wake');
+xlabel('s[cm]');ylabel('W_|_|[V/pC/m]');

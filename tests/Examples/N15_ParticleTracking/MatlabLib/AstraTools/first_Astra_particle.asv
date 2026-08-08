@@ -1,0 +1,7 @@
+function [] = first_Astra_particle(in_file,out_file)
+% first particle from in_file --> out_file
+
+f_in=fopen(in_file);
+      card=fgetl(f_in);
+
+      fclose(f_in);

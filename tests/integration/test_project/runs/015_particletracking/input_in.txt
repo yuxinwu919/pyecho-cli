@@ -1,0 +1,50 @@
+%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
+
+GeometryFile=pipe.txt
+Units=cm	% -m/cm/mm
+GeometryType=round	 % recta / round
+Width=0	% in meters
+SymmetryCondition=magn	 % magn/elec
+Convex=0
+
+%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%
+
+InPartFile=InParticles/Particles.in
+BunchSigma=0
+Offset=0
+InjectionTimeStep=0
+
+%%%%%%%%%%%%%%  field %%%%%%%%%%%%%%%%%%%%%%
+
+InFieldDir=-
+PortDir=-
+PortPosition=-1
+
+%%%%%%%%%%%%%% model %%%%%%%%%%%%%%%%%%%%%%%
+
+WakeIntMethod=dir
+Modes=0 
+ParticleMotion=1
+ParticleField=1
+CurrentFilter=1
+ParticleLoss=1
+
+%%%%%%%%%%%%%% mesh %%%%%%%%%%%%%%%%%%%%%%%
+
+MeshLength=400
+StartPosition=0
+TimeSteps=-1
+StepY=5e-05
+StepZ=5e-05
+NStepsInConductive=0
+AdjustMesh=1
+MeshMotionFile=-
+
+%%%%%%%%%%%%%% monitors %%%%%%%%%%%%%%%%%%%%%%%
+
+BeamMonitor=1 	20000 	10 	500
+FieldMonitor=Ez 	z 	0 	1 	0 	0 	0 	1 	1000
+DumpField=1
+DumpParticles=1
+DumpCurrent=1
+DumpMesh=1

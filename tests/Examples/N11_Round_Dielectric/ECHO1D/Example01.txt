@@ -1,0 +1,10 @@
+% Nm - Number of  layers
+1
+% boundaries 
+5e-3  	10e-3
+% Re(EpsR[i]) Im(EpsR[i]) Re(EpsFi[i]) Im(EpsFI[i]) Re(EpsZ[i]) Im(EpsZ[i]), i=1,Nm
+11 	0 	11 	0 	11 	0         
+% Re(MueR[i]) Im(MueR[i]) Re(MueFi[i]) Im(MueFI[i]) Re(MueZ[i]) Im(MueZ[i]), i=1,Nm
+1 	0 	1 	0 	1 	0         
+% Conductivity[i], Relaxation Time[i], i=1,Nm
+1	0         

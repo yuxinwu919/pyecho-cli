@@ -1,0 +1,18 @@
+function name = last_Astra_solution(last_Astra_log)
+% get name of last Astra solution from log file
+
+name='undefined';
+f_in=fopen(last_Astra_log);
+nend=0; nnend=0;
+while 1
+      card=fgetl(f_in);
+      if ~ischar(card), break, end
+      if length(strfind(card,'End of Input deck'))>0, nnend=1; end
+      nend=nend+nnend;
+      if nend==3
+          name1=last_Astra_log(1:strfind(last_Astra_log,'.Log'));
+          name2=card(strfind(card,'.001')-4:strfind(card,'.001')+3);
+          name=[name1 name2];
+      end
+end
+fclose(f_in);

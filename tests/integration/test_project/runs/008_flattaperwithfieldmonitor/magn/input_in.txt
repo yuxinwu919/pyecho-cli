@@ -1,0 +1,50 @@
+%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
+
+GeometryFile=taper_cm.txt
+Units=cm	% -m/cm/mm
+GeometryType=rect	 % recta / round
+Width=0.05	% in meters
+SymmetryCondition=magn	 % magn/elec
+Convex=1
+
+%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%
+
+InPartFile=-
+BunchSigma=0.005
+Offset=0
+InjectionTimeStep=0
+
+%%%%%%%%%%%%%%  field %%%%%%%%%%%%%%%%%%%%%%
+
+InFieldDir=-
+PortDir=-
+PortPosition=-1
+
+%%%%%%%%%%%%%% model %%%%%%%%%%%%%%%%%%%%%%%
+
+WakeIntMethod=ind
+Modes=1 3 5 7 9 11 13 15 17 19 21 23 25 27 29 31 33 35 37 39 41 43 45 47 49 51 53 55 57 59 61 63 65 67 69 
+ParticleMotion=0
+ParticleField=1
+CurrentFilter=0
+ParticleLoss=0
+
+%%%%%%%%%%%%%% mesh %%%%%%%%%%%%%%%%%%%%%%%
+
+MeshLength=100
+StartPosition=0
+TimeSteps=172
+StepY=0.001
+StepZ=0.001
+NStepsInConductive=0
+AdjustMesh=0
+MeshMotionFile=-
+
+%%%%%%%%%%%%%% monitors %%%%%%%%%%%%%%%%%%%%%%%
+
+FieldMonitor = {'Ez' 	'z' 	0.02 	0.1 	0 	0.021 	0 	1 	1}
+FieldMonitor = {'Ez' 	's' 	0.02 	0.04 	0 	0.021 	0.02 	0.1 	1}
+DumpField=0
+DumpParticles=0
+DumpCurrent=0
+DumpMesh=0

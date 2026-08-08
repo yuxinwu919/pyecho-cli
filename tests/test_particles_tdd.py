@@ -53,8 +53,8 @@ def _write_echo_particles(
     x = np.asarray(x, dtype=float)
     Np = x.size
     if status is None:
-        status = np.zeros(Np, dtype=np.int64)
-    status = np.asarray(status, dtype=np.int64)
+        status = np.zeros(Np, dtype=np.int32)
+    status = np.asarray(status, dtype=np.int32)
     phase = np.column_stack([x, y, z, px, py, pz]).astype("<f8")
     buf = struct.pack("<dd", float(Np), q0)
     buf += phase.tobytes(order="F")          # component-major: all x, all y, ...
@@ -75,7 +75,7 @@ def _make_particles(
     x = np.asarray(x, dtype=float)
     Np = x.size
     if status is None:
-        status = np.zeros(Np, dtype=np.int64)
+        status = np.zeros(Np, dtype=np.int32)
     return {
         "x": x,
         "y": np.asarray(y, dtype=float),
@@ -83,7 +83,7 @@ def _make_particles(
         "px": np.asarray(px, dtype=float),
         "py": np.asarray(py, dtype=float),
         "pz": np.asarray(pz, dtype=float),
-        "status": np.asarray(status, dtype=np.int64),
+        "status": np.asarray(status, dtype=np.int32),
     }
 
 

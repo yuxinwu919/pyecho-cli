@@ -1,0 +1,13 @@
+function svalue=ReadParameter(taskfile,parameter)
+    fin=fopen(taskfile,'rt');
+    while feof(fin) == 0,
+       line = fgets(fin);
+       k=strfind(line,parameter);
+       if length(k)==0, k=0;
+       else
+           sf=[parameter ' = %s'];
+           svalue=sscanf(line,sf);
+       end;
+    end;
+    fclose(fin);
+    

@@ -1,0 +1,20 @@
+function Imax=PlotParticles2D(P,see,q0,v,M,color,scale) 
+if nargin<5, M=0.1; end;
+if nargin<6, color='b'; end;
+if nargin<7, scale=1e6; end;
+Imax=0;
+if see==0, plot(P(:,1)*1e6,P(:,2),'.','MarkerSize',1); end;
+if see==1,  
+       sig0=M*std(P(:,1));
+       B=s_to_cur(P(:,1),sig0,q0,v); 
+       plot(B(:,1)*scale,B(:,2),color);
+       Imax=max(B(:,2));
+end;
+if see==2,  
+      [z E_av E_rms]=SliceAnalysis2D (P,M);
+      plot(z*scale,E_av,color);
+end;
+   
+   
+   
+   

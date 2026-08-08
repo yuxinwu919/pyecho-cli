@@ -1,0 +1,43 @@
+function [mx mxs mxx mxxs mxsxs emittx]=SliceAnalysis_av (z,x,xs,dz,to_sort)
+    if to_sort, P=sortrows([z x xs]);  z=P(:,1);x=P(:,2);xs=P(:,3); P=[]; end;
+    N=length(x);
+    mx(1:N,1)=0;mxs(1:N,1)=0; mxx(1:N,1)=0;mxxs(1:N,1)=0; mxsxs(1:N,1)=0; emittx(1:N,1)=0; 
+    xc=cumsum(x);
+    xsc=cumsum(xs);
+    dz05=dz*0.5;
+    n1a(1:N)=0;n2a(1:N)=0;
+    
+    for i =1:N,
+        z1=z(i)-dz05;
+        z2=z(i)+dz05;
+        n1a(i)=1;
+        for j=1:N,
+           if z(j)>=z1, n1a(1)=j; break; end;
+        end;
+        n2a(i)=1;
+        for j=1:N,
+           if z(j)>=z2, n2a(1)=j, break; end;
+        end;
+    end; 
+    
+    
+    for i =1:N,
+        n1=n1a(i);
+        n2=n2a(i);
+        dq=n2-n1;
+        mx(i)=(xc(n2)-xc(n1))/dq;
+        mxs(i)=(xsc(n2)-xsc(n1))/dq;
+    end;
+    x=x-mx; xs=xs-mxs;
+    x2c=cumsum(x.*x);xs2c=cumsum(xs.*xs);
+    xxsc=cumsum(x.*xs);
+    for i =1:N, 
+        n1=n1a(i);
+        n2=n2a(i);
+        dq=n2-n1;
+        mxx(i)=(x2c(n2)-x2c(n1))/dq;
+        mxsxs(i)=(xs2c(n2)-xs2c(n1))/dq;
+        mxxs(i)=(xxsc(n2)-xxsc(n1))/dq;
+    end;
+    emittx=sqrt(mxx.*mxsxs-mxxs.*mxxs);
+    

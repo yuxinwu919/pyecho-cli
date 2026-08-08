@@ -1,0 +1,48 @@
+%%%%%%%%%%%%%% geometry %%%%%%%%%%%%%%%%%%%%
+
+GeometryFile=pillbox.dat	% -(Gaussian beam)
+Units=cm	% -m/cm/mm
+GeometryType=round	 % recta / round
+Width=0	% in meters
+SymmetryCondition=magn	 % magn/elec
+Convex=0
+
+%%%%%%%%%%%%%% beam %%%%%%%%%%%%%%%%%%%%%%%%
+
+InPartFile=-
+BunchSigma=0.01
+Offset=0
+InjectionTimeStep=0
+
+%%%%%%%%%%%%%%  field %%%%%%%%%%%%%%%%%%%%%%
+
+InFieldDir=-
+PortDir=-
+PortPosition=-1
+
+%%%%%%%%%%%%%% model %%%%%%%%%%%%%%%%%%%%%%%
+
+WakeIntMethod=ind
+Modes=0 1 
+ParticleMotion=0
+ParticleField=1
+CurrentFilter=0
+ParticleLoss=0
+
+%%%%%%%%%%%%%% mesh %%%%%%%%%%%%%%%%%%%%%%%
+
+MeshLength=300
+StartPosition=0
+TimeSteps=313
+StepY=0.0013333333
+StepZ=0.002
+NStepsInConductive=10
+AdjustMesh=0
+MeshMotionFile=-
+
+%%%%%%%%%%%%%% monitors %%%%%%%%%%%%%%%%%%%%%%%
+
+DumpField=0
+DumpParticles=0
+DumpCurrent=0
+DumpMesh=0

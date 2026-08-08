@@ -1,0 +1,113 @@
+clear all
+sstart=51; sstop=71.2;
+rot=pi/2;
+% read longlist from WD
+%[name path] = uigetfile('*.*',  'All Files (*.*)')
+
+proj_name = 'XFEL';path = 'D:\mad8\_XFEL\';
+%proj_name = 'FLASH';path = 'D:\mad8\_FLASH\';
+name = 'longlist.dat';
+fid = fopen([path name]);
+index=0;
+while 1
+    tline = fgetl(fid);
+    if ~ischar(tline), break, end
+    if(~strcmp(tline,''))
+        index=index+1;
+        [longlist(:,index)] = strread(tline,'%s');
+    end
+end
+fclose(fid);
+
+% write file
+fid = fopen([path proj_name '.txt'],'w+');
+header = {
+  'io_path{input =in,output=out,logfile=log.txt}';
+  'lattice{'
+ };
+% write header
+for i=1:length(header)
+    fprintf(fid,'%s\n', char(header(i)));
+end;
+
+
+longlist(1,:)=[];
+index=0;
+for i=1:length(longlist)
+    class = char(longlist(5,i));
+    if(strcmp(class,'SBEN'));
+      spos      = str2num(char(longlist(12,i)));
+      if (spos>sstart & spos<sstop),
+        fprintf(fid,'%s\n', ['        dipole !' char(longlist(2,i))]);
+        % get length and strength
+        lbend     = str2num(char(longlist(7,i)));
+        phi       = str2num(char(longlist(8,i)));
+        rho       = lbend/phi;
+        
+        ds=rho*sin(phi);        s0=spos-ds*0.5;   
+        if index==0, ds0=0; else ds0=s0-s; end;
+        s=spos+ds*0.5; 
+               
+        if index==0,
+            fprintf(fid,'          %s\n', ['{position {rho=0, psi=0.0, marker=d' num2str(index) 'a}']);
+        else
+            fprintf(fid,'          %s\n', ['{position {delta_s=' num2str(ds0) ', delta_psi=0.0, marker=d' num2str(index) 'a}']);
+        end;
+        fprintf(fid,'           %s\n', ['properties {r=' num2str(rho) '}' ]);
+        fprintf(fid,'           %s\n', ['position {delta_s=' num2str(ds) ', delta_psi=0.0, marker=d' num2str(index) 'b}']);
+        fprintf(fid,'             }\n');
+        index=index+1;
+      end
+    end;
+    if(strcmp(class,'QUAD'));
+      spos      = str2num(char(longlist(12,i)));
+      if (spos>sstart & spos<sstop),
+        fprintf(fid,'%s\n', ['        multipole !' char(longlist(2,i))]);
+        % get length and strength
+        lbend     = str2num(char(longlist(7,i)));
+        phi       = str2num(char(longlist(8,i)));
+        rho       = -lbend/phi;
+        
+        ds=lbend ;        s0=spos-ds*0.5;   
+        if index==0, ds0=0; else ds0=s0-s; end;
+        s=spos+ds*0.5; 
+               
+        if index==0,
+            fprintf(fid,'          %s\n', ['{position {rho=0, psi=0.0, marker=d' num2str(index) 'a}']);
+        else
+            fprintf(fid,'          %s\n', ['{position {delta_s=' num2str(ds0) ', delta_psi=0.0, marker=d' num2str(index) 'a}']);
+        end;
+        fprintf(fid,'           %s\n', ['properties {poles=4, strength=' num2str(1/rho) ', alpha=' num2str(rot/2) '}' ]);
+        fprintf(fid,'           %s\n', ['position {delta_s=' num2str(ds) ', delta_psi=0.0, marker=d' num2str(index) 'b}']);
+        fprintf(fid,'             }\n');
+        index=index+1;
+      end
+    end;
+    if(strcmp(class,'SEXT'));
+      spos      = str2num(char(longlist(12,i)));
+      if (spos>sstart & spos<sstop),
+        fprintf(fid,'%s\n', ['        multipole !' char(longlist(2,i))]);
+        % get length and strength
+        lbend     = str2num(char(longlist(7,i)));
+        phi       = str2num(char(longlist(8,i)));
+        rho       = lbend/phi;
+        
+        ds=lbend ;        s0=spos-ds*0.5;   
+        if index==0, ds0=0; else ds0=s0-s; end;
+        s=spos+ds*0.5; 
+               
+        if index==0,
+            fprintf(fid,'          %s\n', ['{position {rho=0, psi=0.0, marker=d' num2str(index) 'a}']);
+        else
+            fprintf(fid,'          %s\n', ['{position {delta_s=' num2str(ds0) ', delta_psi=0.0, marker=d' num2str(index) 'a}']);
+        end;
+       fprintf(fid,'           %s\n', ['properties {poles=6, strength=' num2str(1/rho) ', alpha=' num2str(rot) '}' ]);
+        fprintf(fid,'           %s\n', ['position {delta_s=' num2str(ds) ', delta_psi=0.0, marker=d' num2str(index) 'b}']);
+        fprintf(fid,'             }\n');
+        index=index+1;
+      end
+    end;
+    
+end
+fprintf(fid,'   }\n');
+fclose(fid);

@@ -1,0 +1,16 @@
+id: '015'
+name: particletracking
+schema_version: 1
+created: '2026-08-08T16:24:01.658969'
+geometry_type: round
+status: pending
+sub_runs:
+- symmetry: magn
+  status: pending
+  duration_s: 0.0
+  output_dir: round/
+processed:
+  loss_long_VpC: -0.8551265331465597
+  kick_quad_VpCmm: null
+  kick_dipole_VpCmm: null
+  peak_VpC: 58.52208

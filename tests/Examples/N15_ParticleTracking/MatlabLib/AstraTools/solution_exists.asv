@@ -1,0 +1,14 @@
+function [L_sol_exists] = solution_exists(folder)
+% check if solution exists
+
+f_in=fopen(folder filesep 'name_of_last_solution.txt'],'rt');
+if f_in==-1
+    L_sol_exists=false; 
+else
+   if feof(f_in)==0
+       L_sol_exists=false; 
+   else
+       card=fgets(f_in);
+       close(f_in);
+   end
+end

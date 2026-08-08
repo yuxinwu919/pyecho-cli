@@ -1,0 +1,8 @@
+function [] = average_Astra_particle(in_file,out_file)
+% average particle from in_file --> out_file
+
+
+[PD Q]=LoadAstraParticles(in_file);
+SaveAstraParticles(out_file,PD,Q);
+
+

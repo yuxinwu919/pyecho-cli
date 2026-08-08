@@ -1,0 +1,23 @@
+function dL=VelocityBunching2(E0,dE,L)
+PhysConsts;
+if L>0,
+   E0=E0*1e6; 
+   E1=E0+dE*1e6;
+   P0=sqrt(E0.*E0-E00*E00); p0=P0(1);
+   P1=sqrt(E1.*E1-E00*E00); p1=P1(1);
+   alpha=(E1-E0)/L;
+   
+   %drift
+   ct0=E0(1)/p0*L;
+   dL=P0./E0*ct0-L;
+   %acceleration
+   inds=find(alpha~=0);
+   
+   % constant acceleration during the same time
+      cT=(P1(inds)-P0(inds))./alpha(inds);
+      P1=P0+ct0*alpha;
+      E1=sqrt(E00*E00+P1.*P1);
+      dL=(E1-E0)/alpha-L;
+else
+    dL=0;
+end;
