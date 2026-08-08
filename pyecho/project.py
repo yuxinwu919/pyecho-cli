@@ -81,9 +81,7 @@ def _get_workspace_root() -> Path:
 
     Priority:
     1. ``ECHO2D_WORKSPACE`` environment variable
-    2. Current working directory (if it contains ``.echo2d.yaml`` or is
-       inside an ECHO2D project)
-    3. ``~/echo2d_projects`` default
+    2. Current working directory (default)
     """
     env = os.environ.get("ECHO2D_WORKSPACE", "")
     if env:
@@ -106,7 +104,8 @@ def _get_workspace_root() -> Path:
         if child.is_dir() and (child / MANIFEST_FILE).is_file():
             return cwd
 
-    return Path(DEFAULT_WORKSPACE).expanduser().resolve()
+    # Default: current working directory (like `git init`)
+    return Path.cwd()
 
 
 def _next_run_id(runs_dir: Path) -> str:

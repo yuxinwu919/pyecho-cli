@@ -55,7 +55,8 @@ def project_init(
     """Create a new ECHO2D project with standard structure.
 
     By default, projects are created in the workspace
-    (~/echo2d_projects/).  Use --here to create in the current
+    By default, creates the project in the current working directory.
+    Use ECHO2D_WORKSPACE env var or --dir to specify a different location.
     directory, or --dir for a custom location.
     """
     from pyecho.project import (
@@ -197,7 +198,7 @@ def project_list(
 ) -> None:
     """List ECHO2D projects.
 
-    By default, scans the workspace (~/echo2d_projects/).
+    By default, scans the current directory for projects.
     Use --all to scan the current directory for legacy projects as well.
     """
     from pyecho.project import scan_workspace, is_legacy_project, _get_workspace_root
