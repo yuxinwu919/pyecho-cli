@@ -101,9 +101,9 @@ class PostProcessor:
             if not child.is_dir():
                 continue
             name = child.name.lower()
-            if (name == "magn" or name.startswith("magn")) and list_wake_files(child):
+            if (name == "magn" or name.startswith("magn_")) and list_wake_files(child):
                 magn_dir = child
-            if (name == "elec" or name.startswith("elec")) and list_wake_files(child):
+            if (name == "elec" or name.startswith("elec_")) and list_wake_files(child):
                 elec_dir = child
 
         has_magn = magn_dir is not None
