@@ -69,9 +69,9 @@ runs:
     duration_s: 0.0
     output_dir: elec/
   processed:
-    loss_long_VpC: -0.0015406884534772494
-    kick_quad_VpCmm: -0.00023113970257781377
-    kick_dipole_VpCmm: -0.0
+    loss_long_VpC: 0.29995012297930856
+    kick_quad_VpCmm: 0.004407665322526836
+    kick_dipole_VpCmm: 0.004483184421469557
     peak_VpC: null
 - id: '005'
   name: flatabsorberdipole
@@ -89,9 +89,9 @@ runs:
     duration_s: 0.0
     output_dir: elec/
   processed:
-    loss_long_VpC: -0.0015406884534772494
-    kick_quad_VpCmm: -0.00023113970257781377
-    kick_dipole_VpCmm: -0.00023898216264008683
+    loss_long_VpC: 0.29995012297930856
+    kick_quad_VpCmm: 0.004407665322526836
+    kick_dipole_VpCmm: 0.004483184421469557
     peak_VpC: null
 - id: '006'
   name: pohangdechirper
@@ -109,9 +109,9 @@ runs:
     duration_s: 0.0
     output_dir: elec/
   processed:
-    loss_long_VpC: -0.6195943013588756
-    kick_quad_VpCmm: -0.14283517785357297
-    kick_dipole_VpCmm: -0.0
+    loss_long_VpC: 761.295424951838
+    kick_quad_VpCmm: 52.90739294007213
+    kick_dipole_VpCmm: 58.50838416866931
     peak_VpC: null
 - id: '007'
   name: taperedresistivecollimator
@@ -129,8 +129,8 @@ runs:
     duration_s: 0.0
     output_dir: elec/
   processed:
-    loss_long_VpC: 0.0025814218445363297
-    kick_quad_VpCmm: -0.003735431759365716
+    loss_long_VpC: 6.298627132693752
+    kick_quad_VpCmm: 0.12446091304340617
     kick_dipole_VpCmm: -0.0
     peak_VpC: null
 - id: 008
@@ -149,8 +149,8 @@ runs:
     duration_s: 0.0
     output_dir: elec/
   processed:
-    loss_long_VpC: 0.011125960433636416
-    kick_quad_VpCmm: -0.004724900432471263
+    loss_long_VpC: 0.6844456885818176
+    kick_quad_VpCmm: 0.03753731008465258
     kick_dipole_VpCmm: -0.0
     peak_VpC: null
 - id: 009
@@ -217,9 +217,9 @@ runs:
     duration_s: 0.0
     output_dir: elec/
   processed:
-    loss_long_VpC: 0.5138808946999938
-    kick_quad_VpCmm: -0.0054688201910849605
-    kick_dipole_VpCmm: -0.0069523858734683655
+    loss_long_VpC: 268.20179003480285
+    kick_quad_VpCmm: 1.146508810830625
+    kick_dipole_VpCmm: 1.4904191676644174
     peak_VpC: null
 - id: '013'
   name: restart

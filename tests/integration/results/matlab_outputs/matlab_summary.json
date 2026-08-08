@@ -1,0 +1,238 @@
+{
+  "N10": {
+    "example": "N10",
+    "run_dir": "010_teslacavitylong",
+    "geometry": "round",
+    "config": "mono+dipole",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "mono_loss": 9.710274391,
+      "mono_spread": 4.188354798,
+      "mono_peak": 14.14363,
+      "dipole_loss": 14437.98508,
+      "dipole_spread": 5900.299622,
+      "dipole_kick": 19.60552832,
+      "dipole_rms_kick": 15.00825418,
+      "dipole_peak": 20574.99139
+    }
+  },
+  "N11": {
+    "example": "N11",
+    "run_dir": "011_round_dielectric",
+    "geometry": "round",
+    "config": "mono+dipole",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "mono_loss": 558.5389486,
+      "mono_spread": 275.3534039,
+      "mono_peak": 892.786,
+      "dipole_loss": 43308301.28,
+      "dipole_spread": 20878379.72,
+      "dipole_kick": 13405.77182,
+      "dipole_rms_kick": 11439.72545,
+      "dipole_peak": 68020352.0
+    }
+  },
+  "N12": {
+    "example": "N12",
+    "run_dir": "012_flat_dielectric",
+    "geometry": "flat",
+    "config": "magn+elec",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "wake_lossL": 268.2017895,
+      "wake_spreadL": 137.9747983,
+      "wake_lossD": 1.490419126,
+      "wake_spreadD": 1.259422896,
+      "wake_lossQ": 1.146508771,
+      "wake_spreadQ": 1.017124946
+    }
+  },
+  "N13": {
+    "example": "N13",
+    "run_dir": "013_restart",
+    "geometry": "round",
+    "config": "mono+dipole",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "mono_loss": 2.197233233,
+      "mono_spread": 1.124075134,
+      "mono_peak": 3.565663,
+      "dipole_loss": 2729.770284,
+      "dipole_spread": 1110.456561,
+      "dipole_kick": 19.14238418,
+      "dipole_rms_kick": 14.12695112,
+      "dipole_peak": 3896.736306
+    }
+  },
+  "N14": {
+    "example": "N14",
+    "run_dir": "014_wakemonitor_arbitrarybunchshape",
+    "geometry": "round",
+    "config": "monopole",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "mono_loss": 0.9452578963,
+      "mono_spread": 0.2520929159,
+      "mono_peak": 2.656361
+    }
+  },
+  "N16": {
+    "example": "N16",
+    "run_dir": "016_slacdechirper (run pending; used shipped reference)",
+    "geometry": "flat",
+    "config": "shipped WakeL_Tm_Tq_Td",
+    "completed": true,
+    "errored": true,
+    "matlab_exit": "SEGV-at-exit",
+    "values": {
+      "n16_peakWlong": 20773.075,
+      "n16_peakWm": 8100.3352,
+      "n16_peakWquad": 15537.588,
+      "n16_peakWdipole": 15570.185,
+      "n16_kick_max": 3256.3421,
+      "n16_kick_min": -3256.0659
+    }
+  },
+  "N2": {
+    "example": "N2",
+    "run_dir": "002_roundcollimatordipole",
+    "geometry": "round",
+    "config": "dipole",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "dipole_loss": 0.0,
+      "dipole_spread": 0.0,
+      "dipole_kick": 0.0,
+      "dipole_rms_kick": 0.0,
+      "dipole_peak": 0.0
+    }
+  },
+  "N3": {
+    "example": "N3",
+    "run_dir": "003_roundcollimatordipoleconductive",
+    "geometry": "round",
+    "config": "mono+dipole",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "mono_loss": 8.630191586,
+      "mono_spread": 3.270228445,
+      "mono_peak": 11.97596,
+      "dipole_loss": 72493.5475,
+      "dipole_spread": 26282.82905,
+      "dipole_kick": 120.3224734,
+      "dipole_rms_kick": 74.2543797,
+      "dipole_peak": 99344.44114
+    }
+  },
+  "N4": {
+    "example": "N4",
+    "run_dir": "004_flatabsorberlongquad",
+    "geometry": "flat",
+    "config": "magn-only",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "wake_lossL": 0.2999501228,
+      "wake_spreadL": 0.1266686525,
+      "wake_lossQ": 0.00440766532,
+      "wake_spreadQ": 0.002511617599
+    }
+  },
+  "N5": {
+    "example": "N5",
+    "run_dir": "005_flatabsorberdipole",
+    "geometry": "flat",
+    "config": "magn+elec",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "wake_lossL": 0.2999501228,
+      "wake_spreadL": 0.1266686525,
+      "wake_lossD": 0.004483184418,
+      "wake_spreadD": 0.002556220469,
+      "wake_lossQ": 0.00440766532,
+      "wake_spreadQ": 0.002511617599
+    }
+  },
+  "N6": {
+    "example": "N6",
+    "run_dir": "006_pohangdechirper",
+    "geometry": "flat",
+    "config": "magn-only",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "wake_lossL": 761.2954253,
+      "wake_spreadL": 365.6447656,
+      "wake_lossQ": 52.90739317,
+      "wake_spreadQ": 40.69268717
+    }
+  },
+  "N7": {
+    "example": "N7",
+    "run_dir": "007_taperedresistivecollimator",
+    "geometry": "flat",
+    "config": "magn-only",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "wake_lossL": 6.298627133,
+      "wake_spreadL": 3.831010961,
+      "wake_lossQ": 0.1244609137,
+      "wake_spreadQ": 0.06200774626
+    }
+  },
+  "N8": {
+    "example": "N8",
+    "run_dir": "008_flattaperwithfieldmonitor",
+    "geometry": "flat",
+    "config": "magn-only",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "wake_lossL": 0.6844456886,
+      "wake_spreadL": 0.3271939594,
+      "wake_lossQ": 0.03753731015,
+      "wake_spreadQ": 0.01975722523
+    }
+  },
+  "N9": {
+    "example": "N9",
+    "run_dir": "009_resistivepillbox",
+    "geometry": "round",
+    "config": "mono+dipole",
+    "completed": true,
+    "errored": false,
+    "matlab_exit": "ok",
+    "values": {
+      "mono_loss": 0.3506582551,
+      "mono_spread": 0.5170284293,
+      "mono_peak": 1.320108,
+      "dipole_loss": 1653.351721,
+      "dipole_spread": 33624.89528,
+      "dipole_kick": 511.621394,
+      "dipole_rms_kick": 213.2434361,
+      "dipole_peak": 48640.56932
+    }
+  }
+}

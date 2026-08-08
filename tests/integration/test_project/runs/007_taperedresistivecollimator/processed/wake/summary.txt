@@ -1,4 +1,4 @@
 Geometry: rectangular (recta)
-Longitudinal loss: 0.002581 V/pC
-Quadrupole kick:   -0.003735 V/pC/mm
+Longitudinal loss: 6.298627 V/pC
+Quadrupole kick:   0.124461 V/pC/mm
 Dipole kick:       -0.000000 V/pC/mm

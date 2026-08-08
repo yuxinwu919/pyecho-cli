@@ -343,14 +343,13 @@ def _postprocess_flat(
     Wquad = result["Wquad"]
     Wdipole = result.get("Wdipole", np.zeros_like(Wlong))
 
-    # Compute loss/kick factors via trapezoidal integration
-    def _trapz(y: "np.ndarray", x: "np.ndarray") -> float:
-        """Trapezoidal integration (compatible with numpy 1.x and 2.x)."""
-        return float(0.5 * np.sum((y[1:] + y[:-1]) * (x[1:] - x[:-1])))
-
-    loss_long = -_trapz(Wlong, s)
-    kick_quad = -_trapz(Wquad, s)
-    kick_dipole = -_trapz(Wdipole, s)
+    # Loss / kick factors are already computed with bunch weighting by
+    # process_recta_wake (via recta._add_bunch_and_loss_factors, which
+    # mirrors MATLAB's LossShape.m).  Bare trapezoidal integrals would
+    # miss the bunch-profile convolution and produce wrong values.
+    loss_long = float(result.get("loss_long", 0.0))
+    kick_quad = float(result.get("loss_quad", 0.0))
+    kick_dipole = float(result.get("loss_dipole", 0.0))
 
     return RectaWakeResult(
         s=s,

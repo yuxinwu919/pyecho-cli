@@ -14,7 +14,7 @@ sub_runs:
   duration_s: 0.0
   output_dir: elec/
 processed:
-  loss_long_VpC: -0.6195943013588756
-  kick_quad_VpCmm: -0.14283517785357297
-  kick_dipole_VpCmm: -0.0
+  loss_long_VpC: 761.295424951838
+  kick_quad_VpCmm: 52.90739294007213
+  kick_dipole_VpCmm: 58.50838416866931
   peak_VpC: null
