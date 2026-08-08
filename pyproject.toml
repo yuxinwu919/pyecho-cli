@@ -123,4 +123,8 @@ exclude_also = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
-addopts = "-v --tb=short"
+addopts = "-v --tb=short -m \"not integration\""
+markers = [
+    "integration: tests that run ECHO2D simulations (skipped in CI — needs binary)",
+    "matlab: tests that require MATLAB (run locally only)",
+]
