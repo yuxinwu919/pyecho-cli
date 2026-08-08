@@ -37,12 +37,12 @@ echo2d example round-collimator  # run N1 with one command
 ```
 echo2d
 ├── project      init / templates / examples / list / info / path / migrate
-├── config       generate / validate / show / generate-bunch / validate-bunch
+├── config       generate / validate / show / diff / generate-bunch / validate-bunch / set / get
 ├── geometry     create (pipe/dlw/corrugated) / validate / show / info
-├── run          new / start / list / info / single / batch / converge
+├── run          new / start / list / info / single / batch / sweep / converge
 ├── postprocess  wake / impedance / field / particles / wake-monitor /
-│                beam-moments / all / report
-├── visualize    wake / impedance / compare / modes / field
+│                beam-moments / all / report / summary
+├── visualize    wake / impedance / compare / modes / field / geometry
 ├── export       hdf5 / csv
 ├── compare      projects / runs
 ├── system       info / detect / check

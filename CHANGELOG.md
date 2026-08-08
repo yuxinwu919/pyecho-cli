@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.3.1] — 2026-08-08
+
+### Bug Fixes
+- Flat-geometry loss/kick used bare trapezoidal integrals instead of bunch-weighted convolution (100% error vs MATLAB). Fixed by using `process_recta_wake()` loss values via `_add_bunch_and_loss_factors`.
+- Round dipole-only (mode 1 without mode 0) postprocessor crashed with "wakeL_00.txt not found". Fixed by auto-detecting available modes.
+- Magn-only recta runs silently returned loss/kick = 0. Partial paths now call `_add_bunch_and_loss_factors`.
+- Geometry detection used overly broad prefix match (`startswith("magn")` → now requires `"magn_"` or exact `"magn"`).
+
+### New Features
+- `echo2d config diff <file1> <file2>` — side-by-side parameter comparison
+- `echo2d run sweep` — parameter scanning with optional geometry sweep (7 params: radius, half_gap, width, gap, thickness, length, epsilon_r)
+- `echo2d run batch` — YAML-driven batch execution
+- `echo2d postprocess summary` — multi-run comparison table
+- `echo2d visualize geometry` — geometry structure plot
+- `echo2d config set/get` — persistent user preferences (`~/.echo2d/config.yaml`)
+- `echo2d run start --with-particles` — particle tracking mode
+- Dual plotting backend: `pyqtgraph` (default, interactive Qt window) + `matplotlib` (fallback)
+- Tab completion for project names and run IDs
+
+### Testing & Quality
+- 755 unit tests + 42 automated integration tests (pytest `-m integration`)
+- 16/16 examples validated against MATLAB reference (0.000% match for all)
+- Integration test suite: `pytest tests/ -m integration` runs ECHO2D + postprocessing
+- Code review: 4 issues found and fixed (silent magn-only losses, geometry detection, N13 exclusion, test data routing)
+- Particle tracking documentation (`docs/粒子跟踪.md`)
+- Comprehensive integration test report (`tests/integration/results/REPORT.md`)
+
 ## [0.3.0] — 2026-08-07
 
 ### Breaking Changes

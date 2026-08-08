@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyecho-cli"
-version = "0.3.0"
+version = "0.3.1"
 description = "Python CLI toolkit for the ECHO2D electromagnetic wakefield solver"
 authors = [{name = "ECHO2D Team"}]
 readme = "README.md"
