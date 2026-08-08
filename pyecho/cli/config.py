@@ -208,8 +208,20 @@ def config_diff(
     file2: Annotated[str, typer.Argument(help="Second input file")],
 ) -> None:
     """Compare two input_in.txt files and show differences."""
-    path1 = Path(file1)
-    path2 = Path(file2)
+    from pyecho.project import resolve_run_dir as _resolve_run
+
+    def _resolve(p: str) -> Path:
+        path = Path(p)
+        if not path.is_file():
+            resolved = _resolve_run(p)
+            if resolved is not None:
+                cand = resolved / "input_in.txt"
+                if cand.is_file():
+                    return cand
+        return path
+
+    path1 = _resolve(file1)
+    path2 = _resolve(file2)
 
     for path, name in ((path1, file1), (path2, file2)):
         if not path.is_file():
