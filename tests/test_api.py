@@ -91,12 +91,16 @@ def _dipole_result() -> dict:
 
 
 def _recta_result() -> dict:
-    """A plausible ``process_recta_wake`` return dict."""
+    """A plausible ``process_recta_wake`` return dict (post-fix: includes
+    bunch-weighted loss/kick keys set by _add_bunch_and_loss_factors)."""
     return {
         "s": np.array([0.0, 0.001]),
         "Wlong": np.array([1.0, 0.8]),
         "Wquad": np.array([0.5, 0.4]),
         "Wdipole": np.array([0.2, 0.1]),
+        "loss_long": -0.5 * 1.8 * 0.001,    # -∫Wlong·ds via trapezoidal (= bunch-weighted for uniform bunch)
+        "loss_quad": -0.5 * 0.9 * 0.001,     # -∫Wquad·ds
+        "loss_dipole": -0.5 * 0.3 * 0.001,   # -∫Wdipole·ds
         "wcc": np.eye(1),
         "wss": np.eye(1),
     }

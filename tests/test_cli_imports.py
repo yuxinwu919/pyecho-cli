@@ -136,7 +136,7 @@ def test_postprocess_summary_help() -> None:
     # sequences, so a raw substring match is too brittle.
     clean = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
     for token in (
-        "RUNS...",
+        "runs",
         "Generate a summary table across multiple runs",
         "--project",
         "--sort",
