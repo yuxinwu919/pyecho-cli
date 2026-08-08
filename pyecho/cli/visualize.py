@@ -12,7 +12,7 @@ from pyecho.cli import visualize_app, console
 @visualize_app.command("wake")
 def visualize_wake(
     ctx: typer.Context,
-    wake_file: Annotated[str, typer.Argument(help="Wake file path")],
+    wake_file: Annotated[str, typer.Argument(help="Wake file path or run ID (e.g. 001)", autocompletion=lambda: _get_run_ids())],
     bunch_file: Annotated[
         Optional[str],
         typer.Option("--bunch", "-b", help="Bunch profile file"),
@@ -96,7 +96,7 @@ def visualize_wake(
 
 @visualize_app.command("impedance")
 def visualize_impedance(
-    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID", autocompletion=lambda: _get_run_ids())],
     mode: Annotated[int, typer.Option("--mode", "-m", help="Mode number")] = 0,
     output: Annotated[
         Optional[str],
@@ -453,7 +453,7 @@ def visualize_field(
 
 @visualize_app.command("geometry")
 def visualize_geometry(
-    geometry_file: Annotated[str, typer.Argument(help="Geometry file path")],
+    geometry_file: Annotated[str, typer.Argument(help="Geometry file path or run ID (e.g. 001)", autocompletion=lambda: _get_run_ids())],
     units: Annotated[
         str,
         typer.Option("--units", "-u", help="Display units: cm, mm, m"),

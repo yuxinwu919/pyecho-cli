@@ -114,7 +114,13 @@ def _plot_particle_phase_space(particles: dict[str, Any], save_path: str) -> Non
 
 @postprocess_app.command("wake")
 def postprocess_wake(
-    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID (e.g. 001)")],
+    output_dir: Annotated[
+        str,
+        typer.Argument(
+            help="Output directory or run ID (e.g. 001)",
+            autocompletion=lambda: _get_run_ids(),
+        ),
+    ],
     wake_type: Annotated[
         Optional[list[str]],
         typer.Option("--type", "-t", help="Wake type(s)"),
@@ -239,7 +245,7 @@ def postprocess_wake(
 
 @postprocess_app.command("impedance")
 def postprocess_impedance(
-    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID", autocompletion=lambda: _get_run_ids())],
     mode: Annotated[int, typer.Option("--mode", "-m", help="Mode number")] = 0,
     output: Annotated[Optional[str], typer.Option("--output", "-o", help="Save CSV to path")] = None,
     plot: Annotated[bool, typer.Option("--plot", "-p", help="Plot impedance")] = False,
@@ -399,7 +405,7 @@ def postprocess_impedance(
 
 @postprocess_app.command("field")
 def postprocess_field(
-    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID", autocompletion=lambda: _get_run_ids())],
     list_monitors: Annotated[
         bool,
         typer.Option("--list", "-l", help="List available field monitors"),
@@ -651,7 +657,7 @@ def postprocess_field(
 
 @postprocess_app.command("particles")
 def postprocess_particles(
-    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID", autocompletion=lambda: _get_run_ids())],
     to_astra: Annotated[
         Optional[str],
         typer.Option("--to-astra", help="Convert particles to ASTRA format, specify output file"),
@@ -811,7 +817,7 @@ def postprocess_particles(
 
 @postprocess_app.command("wake-monitor")
 def postprocess_wake_monitor(
-    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID", autocompletion=lambda: _get_run_ids())],
     list_monitors: Annotated[
         bool,
         typer.Option("--list", "-l", help="List available WakeMonitor files"),
@@ -916,7 +922,7 @@ def postprocess_wake_monitor(
 
 @postprocess_app.command("beam-moments")
 def postprocess_beam_moments(
-    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID", autocompletion=lambda: _get_run_ids())],
     output: Annotated[
         Optional[str],
         typer.Option("--output", "-o", help="Save beam moments to file"),
@@ -989,7 +995,7 @@ def postprocess_beam_moments(
 
 @postprocess_app.command("all")
 def postprocess_all(
-    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID", autocompletion=lambda: _get_run_ids())],
     auto_detect: Annotated[
         bool,
         typer.Option("--auto-detect/--no-auto-detect", help="Auto-detect geometry type"),
@@ -1164,7 +1170,7 @@ def postprocess_all(
 
 @postprocess_app.command("report")
 def postprocess_report(
-    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID")],
+    output_dir: Annotated[str, typer.Argument(help="Output directory or run ID", autocompletion=lambda: _get_run_ids())],
     output: Annotated[
         Optional[str],
         typer.Option("--output", "-o", help="Output HTML file path"),
