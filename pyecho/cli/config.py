@@ -11,6 +11,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from pyecho.cli import config_app, console
+from pyecho.cli._helpers import _resolve_input_file
 from pyecho.errors import ConfigError
 
 @config_app.command("generate")
@@ -92,10 +93,16 @@ def config_validate(
     2. Nearest runs/*/ directory (project context)
     """
     from pyecho.config import load_params
-    from pyecho.project import find_project_root as _find_proj
+    from pyecho.project import find_project_root as _find_proj, resolve_run_dir as _resolve_run
 
-    # Auto-detect input_in.txt
-    target = _resolve_input_file(input_file)
+    # Resolve run ID (e.g. "001") → full path first
+    resolved = _resolve_run(input_file) if input_file else None
+    if resolved:
+        target = resolved / "input_in.txt"
+        if not target.is_file():
+            target = None
+    else:
+        target = _resolve_input_file(input_file)
     if target is None:
         console.print(
             "[bold red]Error:[/bold red] No input_in.txt found.\n"
@@ -136,8 +143,16 @@ def config_show(
     _json = ctx.obj.get("json", False)
 
     from pyecho.config import load_params
+    from pyecho.project import resolve_run_dir as _resolve_run
 
-    target = _resolve_input_file(input_file)
+    # Resolve run ID (e.g. "001") → full path first
+    resolved = _resolve_run(input_file) if input_file else None
+    if resolved:
+        target = resolved / "input_in.txt"
+        if not target.is_file():
+            target = None
+    else:
+        target = _resolve_input_file(input_file)
     if target is None:
         console.print(
             "[bold red]Error:[/bold red] No input_in.txt found.\n"
