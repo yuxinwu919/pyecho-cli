@@ -29,6 +29,18 @@ def visualize_wake(
     """Visualize wake potential from a wakeL file."""
     from pyecho.cli import _get_plot_backend
     from pyecho.parser import parse_wake_file
+    from pyecho.project import resolve_run_dir as _resolve_run
+
+    # Resolve run ID (e.g. "001") → find raw wakeL_XX.txt in output dir
+    resolved = _resolve_run(wake_file)
+    if resolved is not None:
+        for subdir in ("round", "magn", "elec", ""):
+            d = resolved / subdir if subdir else resolved
+            if d.is_dir():
+                wakes = sorted(d.glob("wakeL_*.txt"))
+                if wakes:
+                    wake_file = str(wakes[0])
+                    break
 
     try:
         parsed = parse_wake_file(wake_file)
@@ -461,6 +473,20 @@ def visualize_geometry(
     Supports round (z-r) and recta (z-y) geometry files.
     """
     from pyecho.visualize import plot_geometry
+    from pyecho.project import resolve_run_dir as _resolve_run
+
+    # Resolve run ID (e.g. "001") → find geometry file in the run dir
+    resolved = _resolve_run(geometry_file)
+    if resolved is not None:
+        inp = resolved / "input_in.txt"
+        if inp.is_file():
+            for line in inp.read_text(encoding="utf-8").splitlines():
+                if line.startswith("GeometryFile="):
+                    geom_name = line.split("=")[1].split()[0]
+                    cand = resolved / geom_name
+                    if cand.is_file():
+                        geometry_file = str(cand)
+                        break
 
     try:
         fig, ax = plot_geometry(geometry_file, units=units)
