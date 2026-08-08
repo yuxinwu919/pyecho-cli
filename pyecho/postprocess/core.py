@@ -353,6 +353,9 @@ class PostProcessor:
         result["wcc"] = wcc
         result["wss"] = None
         result["Wdipole"] = np.zeros_like(result["Wlong"])
+        # Bunch-weighted loss factors (mirrors LossShape.m)
+        from pyecho.postprocess.wakes.recta import _add_bunch_and_loss_factors
+        _add_bunch_and_loss_factors(magn_dir, result)
         return result
 
     def _partial_elec_only(self, elec_dir: Path, n_modes: int) -> dict:
